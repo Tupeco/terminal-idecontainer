@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# Thin wrapper around the container lifecycle. The interesting part is `attach`,
+# which reconnects to a tmux session that never stopped running.
+set -euo pipefail
+
+cd "$(dirname "$0")/.devcontainer"
+
+COMPOSE=(docker compose)
+SERVICE=dev
+
+usage() {
+  cat <<'EOF'
+Usage: ./dev <command>
+
+  up        Build if needed and start the container in the background
+  attach    Attach to the persistent tmux session (use this every morning)
+  shell     Plain bash shell, no tmux
+  clone     Clone a repo into the workspace volume: ./dev clone <git-url>
+  stop      Stop the container (volumes and their contents survive)
+  rebuild   Rebuild the image from scratch, keeping all volumes
+  nuke      Remove the container AND all volumes, including your source
+EOF
+}
+
+case "${1:-}" in
+  up)
+    "${COMPOSE[@]}" up -d --build
+    echo "Container running. Attach with: ./dev attach"
+    ;;
+  attach)
+    exec "${COMPOSE[@]}" exec "$SERVICE" bash -lc 'tmux new-session -A -s main'
+    ;;
+  shell)
+    exec "${COMPOSE[@]}" exec "$SERVICE" bash -l
+    ;;
+  clone)
+    [ $# -ge 2 ] || { echo "usage: ./dev clone <git-url>" >&2; exit 1; }
+    "${COMPOSE[@]}" exec "$SERVICE" bash -lc "cd ~/src && git clone '$2'"
+    ;;
+  stop)
+    "${COMPOSE[@]}" stop
+    ;;
+  rebuild)
+    "${COMPOSE[@]}" build --no-cache
+    "${COMPOSE[@]}" up -d
+    ;;
+  nuke)
+    read -r -p "This deletes the workspace volume and all source in it. Type YES: " ok
+    [ "$ok" = "YES" ] || { echo "aborted"; exit 1; }
+    "${COMPOSE[@]}" down -v
+    ;;
+  *)
+    usage
+    exit 1
+    ;;
+esac

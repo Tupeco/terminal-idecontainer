@@ -1,0 +1,21 @@
+{
+  "name": "Polyglot terminal dev (Python + Rust)",
+  "dockerComposeFile": "docker-compose.yml",
+  "service": "dev",
+  "workspaceFolder": "/home/dev/src",
+  "remoteUser": "dev",
+
+  // Keep the container's own CMD (sleep infinity) rather than letting the
+  // tooling replace it.
+  "overrideCommand": false,
+
+  // Do not stop the container when a client disconnects. Combined with tmux,
+  // this is what makes an overnight suspend a non-event.
+  "shutdownAction": "none",
+
+  "remoteEnv": {
+    "EDITOR": "hx"
+  },
+
+  "postAttachCommand": "tmux new-session -A -s main"
+}

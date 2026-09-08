@@ -1,0 +1,81 @@
+# ---------------------------------------------------------------------------
+# Language servers
+# ---------------------------------------------------------------------------
+
+[language-server.basedpyright]
+command = "basedpyright-langserver"
+args = ["--stdio"]
+
+[language-server.basedpyright.config.basedpyright.analysis]
+# "standard" is a reasonable default coming from PyCharm. Use "all" if you want
+# basedpyright's stricter-than-pyright checks, "basic" if it is too noisy.
+typeCheckingMode = "standard"
+autoImportCompletions = true
+diagnosticMode = "openFilesOnly"
+
+[language-server.ruff]
+command = "ruff"
+args = ["server"]
+
+[language-server.rust-analyzer.config]
+cargo = { features = "all" }
+check = { command = "clippy" }
+inlayHints = { bindingModeHints = { enable = true }, closureReturnTypeHints = { enable = "with_block" } }
+
+# ---------------------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------------------
+
+[[language]]
+name = "python"
+auto-format = true
+formatter = { command = "ruff", args = ["format", "--stdin-filename", "stdin.py", "-"] }
+# basedpyright handles types and navigation; ruff handles lint and quick fixes.
+language-servers = ["basedpyright", "ruff"]
+
+# Helix DAP support is explicitly experimental upstream. This block is here so
+# it works if you want it, but for real Python debugging prefer Neovim
+# (nvim-dap-python) or `python -m debugpy` from a tmux pane.
+[language.debugger]
+name = "debugpy"
+transport = "stdio"
+command = "/opt/debugpy/bin/python"
+args = ["-m", "debugpy.adapter"]
+
+[[language.debugger.templates]]
+name = "script"
+request = "launch"
+completion = [{ name = "script", completion = "filename" }]
+args = { program = "{0}", console = "internalConsole" }
+
+# ---------------------------------------------------------------------------
+# Rust
+# ---------------------------------------------------------------------------
+
+[[language]]
+name = "rust"
+auto-format = true
+language-servers = ["rust-analyzer"]
+
+[language.debugger]
+name = "lldb-dap"
+transport = "stdio"
+command = "lldb-dap"
+
+[[language.debugger.templates]]
+name = "binary"
+request = "launch"
+completion = [{ name = "binary", completion = "filename" }]
+args = { program = "{0}" }
+
+# ---------------------------------------------------------------------------
+# Misc
+# ---------------------------------------------------------------------------
+
+[[language]]
+name = "toml"
+auto-format = true
+
+[[language]]
+name = "markdown"
+soft-wrap = { enable = true, wrap-at-text-width = true }

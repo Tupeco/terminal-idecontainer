@@ -1,0 +1,43 @@
+
+# --- polyglot devcontainer -------------------------------------------------
+
+export PATH="$HOME/.local/bin:/usr/local/cargo/bin:$PATH"
+export EDITOR=hx
+export VISUAL=hx
+export HELIX_RUNTIME=/opt/helix/runtime
+
+# uv: keep downloaded interpreters and the cache where the volumes are.
+export UV_PYTHON_INSTALL_DIR=/opt/python
+export UV_CACHE_DIR="$HOME/.cache/uv"
+
+# Persist shell history across `docker exec` sessions.
+export HISTFILE="$HOME/.local/state/bash_history"
+export HISTSIZE=100000
+export HISTFILESIZE=100000
+export HISTCONTROL=ignoreboth:erasedups
+shopt -s histappend
+mkdir -p "$(dirname "$HISTFILE")"
+
+alias ll='ls -lah --color=auto'
+alias g='git'
+alias hxr='hx .'
+
+# Activate a project venv if one exists in the current directory.
+venv() {
+  if [ -f .venv/bin/activate ]; then
+    # shellcheck disable=SC1091
+    . .venv/bin/activate
+  else
+    echo "no .venv here; create one with: uv venv"
+  fi
+}
+
+# Attach to the persistent tmux session, creating it if needed. This is the
+# command you want after every laptop suspend.
+work() {
+  tmux new-session -A -s "${1:-main}"
+}
+
+if [ -n "$PS1" ] && [ -z "$TMUX" ]; then
+  echo "Polyglot dev container. Run 'work' to attach to the persistent tmux session."
+fi

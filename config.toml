@@ -1,0 +1,52 @@
+theme = "onedark"
+
+[editor]
+line-number = "relative"
+cursorline = true
+color-modes = true
+true-color = true
+bufferline = "multiple"
+completion-timeout = 50
+idle-timeout = 50
+
+# OSC 52. Without this, yanking inside the container silently fails to reach
+# the macOS clipboard. Requires a terminal that supports it: Ghostty, WezTerm,
+# kitty, iTerm2, Alacritty (with the feature enabled).
+clipboard-provider = "termcode"
+
+[editor.statusline]
+left = ["mode", "spinner", "version-control", "file-name", "read-only-indicator", "file-modification-indicator"]
+right = ["diagnostics", "selections", "position", "file-encoding", "file-type"]
+
+[editor.cursor-shape]
+insert = "bar"
+normal = "block"
+select = "underline"
+
+[editor.file-picker]
+hidden = false
+git-ignore = true
+
+[editor.indent-guides]
+render = true
+character = "┆"
+
+[editor.lsp]
+display-messages = true
+display-inlay-hints = true
+
+[editor.soft-wrap]
+enable = true
+
+[keys.normal]
+# Quality-of-life bindings; drop these if you prefer stock Helix.
+C-s = ":write"
+"{" = ["goto_prev_paragraph"]
+"}" = ["goto_next_paragraph"]
+
+[keys.normal.space]
+w = ":write"
+q = ":quit"
+
+[keys.insert]
+j = { k = "normal_mode" }
