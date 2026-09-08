@@ -1,7 +1,7 @@
 # Polyglot terminal dev container
 
-Helix and Neovim running *inside* the container, with Python and Rust tooling,
-Claude Code, and git. Source lives in a named Docker volume.
+Helix, evil-helix and Neovim running *inside* the container, with Python and
+Rust tooling, Claude Code, and git. Source lives in a named Docker volume.
 
 The design goal is that a laptop suspend cannot break your session. Nothing
 here maintains a stateful connection from your Mac into the container. The
@@ -15,12 +15,14 @@ editor process runs inside, under tmux; you attach and detach at will.
   docker-compose.yml      service + named volumes
   devcontainer.json       optional, for devcontainer-spec tooling
   config/
-    helix/config.toml     Helix editor settings
-    helix/languages.toml  LSP + DAP for Python and Rust
-    nvim/init.lua         self-contained Neovim config
-    tmux.conf             OSC 52 passthrough, sane defaults
-    bashrc.extra          PATH, history persistence, `work` helper
-dev                       lifecycle wrapper script
+    helix/config.toml       Helix editor settings
+    helix/languages.toml    LSP + DAP for Python and Rust, shared with ehx
+    evil-helix/config.toml  evil-helix settings; read only by `ehx`
+    nvim/init.lua           self-contained Neovim config
+    bin/hx, bin/ehx         wrappers that pin each editor to its own runtime
+    tmux.conf               OSC 52 passthrough, sane defaults
+    bashrc.extra            PATH, history persistence, `work` helper
+dev                     lifecycle wrapper script
 ```
 
 ## First run
@@ -61,8 +63,10 @@ workspace volume is untouched by container restarts.
 
 | Tool | Purpose |
 |---|---|
-| Helix 25.07.1 | Batteries-included editor, zero config needed |
-| Neovim (upstream stable) | When you need the debugger or plugins |
+| Ubuntu 26.04 LTS | Base image: LLVM 21, GCC 15, system Python 3.14 |
+| Helix 25.07.1 (`hx`) | Batteries-included editor, zero config needed |
+| evil-helix (`ehx`) | Helix with Vim keybindings compiled in |
+| Neovim (upstream stable, `nvim`) | When you need the debugger or plugins |
 | rustup + rust-analyzer, clippy, rustfmt | Rust |
 | uv + Python 3.12 | Python interpreter and package management |
 | basedpyright, ruff | Python LSP, lint, format |
@@ -71,13 +75,32 @@ workspace volume is untouched by container restarts.
 | tmux, ripgrep, fd, fzf, jq, git-lfs | Supporting tools |
 | Node.js 22 | Only for npx-based MCP servers |
 
-## Choosing between the two editors
+## Choosing between the three editors
 
-Both are installed deliberately. Helix (`hx`) needs no configuration and covers
-editing, LSP, and navigation across every language with a server available.
-Neovim (`nvim`) is here for debugging, which is the one area where Helix is
-still explicitly experimental upstream and not a real replacement for what
-PyCharm gave you. Reach for `nvim` when you need breakpoints, `hx` otherwise.
+All three are installed deliberately.
+
+**`hx`** is mainline Helix. It needs no configuration and covers editing, LSP,
+and navigation across every language with a server available. This is the
+default and the one that stays current.
+
+**`ehx`** is [evil-helix](https://github.com/usagi-flow/evil-helix), a soft
+fork that compiles Vim keybindings into the editor instead of bolting them on
+as config: `d`, `c`, `y`, `x`, `a`, the `i` text-object modifier, `w`/`W`/`e`/
+`E`/`b`/`B`/`0`/`$`, and visual-line `V`. It is here as a softer landing from
+Vim than Helix's selection-first model, where the object comes before the verb.
+Set `editor.evil = false` in its config to turn the fork back into stock Helix
+at runtime, which is a useful A/B when a binding surprises you.
+
+**`nvim`** is here for debugging, which is the one area where Helix is still
+explicitly experimental upstream and not a real replacement for what PyCharm
+gave you. Reach for `nvim` when you need breakpoints.
+
+`hx` and `ehx` are separate builds under separate prefixes, wrapped so each
+gets its own `HELIX_RUNTIME` and its own `config.toml`. They deliberately
+*share* `~/.config/helix/languages.toml`, so a language server or debug adapter
+is configured once. The two use different themes purely so you can tell at a
+glance which one you are in; evil-helix also calls the mode `VIS` rather than
+`SEL`.
 
 ## Volumes
 
@@ -114,7 +137,7 @@ what you want anyway.
 ## Clipboard
 
 Yanking inside the container reaches your Mac clipboard via OSC 52, configured
-in all three of Helix, Neovim, and tmux. This requires a terminal that supports
+in Helix, evil-helix, Neovim, and tmux. This requires a terminal that supports
 it: Ghostty, WezTerm, kitty, and iTerm2 all do. Terminal.app does not.
 
 Pasting *into* the container over OSC 52 mostly does not work; use your
@@ -142,6 +165,7 @@ bind mount for the config directory in `docker-compose.yml`:
 
 ```yaml
       - ./config/helix:/home/dev/.config/helix
+      - ./config/evil-helix:/home/dev/.config/evil-helix
       - ./config/nvim:/home/dev/.config/nvim
 ```
 
@@ -152,6 +176,24 @@ bind mount for the config directory in `docker-compose.yml`:
   serious debugging.
 - **Helix has no plugin system in stable releases yet.** The Steel-based one is
   still an unmerged PR. If you need extensibility, that is Neovim's job here.
+- **evil-helix releases on demand, and demand has slowed.** The pinned
+  `release-20250915` is the newest tag, and the fork saw only a handful of
+  commits through 2026. It reports itself as `evil-helix (59215ec5, helix
+  25.07.1)`, so today it sits on exactly the upstream release `hx` is pinned
+  to and the two are in lockstep. That will not hold: when you bump
+  `HELIX_VERSION`, expect `ehx` to fall behind, because a matching evil-helix
+  tag may simply not exist. Check before assuming one does. The drift is
+  survivable in that this is a soft fork rebased on upstream rather than a
+  divergent editor.
+- **Neovim stays on the upstream tarball even on 26.04.** Resolute packages
+  0.11.6, which does run this config, but 0.12.0 landed just after the LTS
+  freeze. An LTS will not rebase, so apt would hold you a minor version behind
+  for five years while the plugin stack moves to 0.12 APIs.
+- **26.04 replaces sudo with sudo-rs and coreutils with rust-coreutils**
+  (`cp`, `mv` and `rm` are still GNU). This file's `ln -sf`, `chmod -R` and the
+  `ls | head` in the lldb-dap probe now run through uutils implementations.
+  They are meant to be drop-in, but this has not been through a full build yet,
+  so if a step fails in a way that makes no sense, suspect that first.
 - **`nvim-treesitter` is pinned to `master`.** Its `main` branch rewrite drops
   the `configs.setup()` API and `:TSUpdateSync` used by this config and by the
   image build. Unpin only alongside a config rewrite.

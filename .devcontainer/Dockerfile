@@ -1,9 +1,15 @@
 # syntax=docker/dockerfile:1
 #
-# Polyglot terminal dev container: Helix + Neovim, Python + Rust, Claude Code.
-# Designed to be lived in via tmux, so a host suspend never breaks your session.
+# Polyglot terminal dev container: Helix + evil-helix + Neovim, Python + Rust,
+# Claude Code. Designed to be lived in via tmux, so a host suspend never breaks
+# your session.
+#
+# 26.04 LTS notes worth knowing when something builds oddly: sudo is now
+# sudo-rs, and the core utilities come from rust-coreutils (cp, mv and rm are
+# still GNU). Both are close enough to drop-in, but this file's ln, chmod and
+# ls now run through uutils implementations.
 
-FROM ubuntu:24.04
+FROM ubuntu:26.04
 
 ARG USERNAME=dev
 ARG USER_UID=1000
@@ -11,6 +17,9 @@ ARG USER_GID=1000
 
 # Pinned so rebuilds are reproducible. Bump deliberately.
 ARG HELIX_VERSION=25.07.1
+# evil-helix tags releases on demand rather than on a cadence; this is the
+# newest as of 2026-09. Check for a newer tag before assuming it is stale.
+ARG EVIL_HELIX_VERSION=release-20250915
 ARG NVIM_VERSION=stable
 ARG NODE_MAJOR=22
 ARG PYTHON_VERSION=3.12
@@ -35,8 +44,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && ln -sf /usr/bin/fdfind /usr/local/bin/fd \
     && rm -rf /var/lib/apt/lists/*
 
-# The DAP binary moved from lldb-vscode to lldb-dap in LLVM 18 and is versioned
-# on Ubuntu. Find whatever is actually there and give it a stable name.
+# The DAP binary moved from lldb-vscode to lldb-dap in LLVM 18. On 26.04 the
+# lldb package (LLVM 21) ships an unversioned /usr/bin/lldb-dap, but older and
+# newer releases version it, so keep discovering it rather than hardcoding.
 RUN set -eux; \
     dap="$(ls /usr/bin/lldb-dap* /usr/lib/llvm-*/bin/lldb-dap 2>/dev/null | head -n1 || true)"; \
     if [ -n "$dap" ]; then \
@@ -55,8 +65,9 @@ RUN curl -fsSL "https://deb.nodesource.com/setup_${NODE_MAJOR}.x" | bash - \
 # ---------------------------------------------------------------------------
 # Non-root user
 #
-# Ubuntu 24.04 ships a stock 'ubuntu' account already occupying UID 1000, which
-# collides with the typical host UID. Remove it before creating ours.
+# Ubuntu images since 24.04 ship a stock 'ubuntu' account already occupying
+# UID 1000, which collides with the typical host UID. Remove whoever holds the
+# UID before creating ours, so this keeps working across base image bumps.
 # ---------------------------------------------------------------------------
 RUN set -eux; \
     if getent passwd "${USER_UID}" >/dev/null; then \
@@ -109,10 +120,14 @@ RUN set -eux; \
     chmod -R a+rX /opt/python /opt/uv-tools /opt/debugpy
 
 # ---------------------------------------------------------------------------
-# Helix
+# Helix and evil-helix
+#
+# Two builds of the same editor live side by side, both shipping a binary named
+# hx and both honouring HELIX_RUNTIME. So HELIX_RUNTIME is deliberately NOT set
+# as an image-wide ENV: whichever value won would silently hand one editor the
+# other's grammars. config/bin/hx and config/bin/ehx set it per process, which
+# is also what keeps the two off each other's config.
 # ---------------------------------------------------------------------------
-ENV HELIX_RUNTIME=/opt/helix/runtime
-
 RUN set -eux; \
     case "$(dpkg --print-architecture)" in \
         amd64) hxarch=x86_64 ;; \
@@ -123,15 +138,41 @@ RUN set -eux; \
         "https://github.com/helix-editor/helix/releases/download/${HELIX_VERSION}/helix-${HELIX_VERSION}-${hxarch}-linux.tar.xz"; \
     mkdir -p /opt/helix; \
     tar -xJf /tmp/helix.tar.xz -C /opt/helix --strip-components=1; \
-    ln -sf /opt/helix/hx /usr/local/bin/hx; \
-    rm /tmp/helix.tar.xz; \
-    hx --version
+    rm /tmp/helix.tar.xz
+
+# evil-helix is a soft fork of Helix with Vim keybindings compiled into the
+# editor rather than bolted on as config, kept here as a third option for
+# muscle memory that predates Helix's selection-first model. Its own binary is
+# also called hx, so it gets a separate prefix and is invoked as `ehx`.
+#
+# Note the different arch spelling: this project publishes amd64/aarch64, not
+# helix's x86_64/aarch64.
+RUN set -eux; \
+    case "$(dpkg --print-architecture)" in \
+        amd64) eharch=amd64 ;; \
+        arm64) eharch=aarch64 ;; \
+        *) echo "unsupported architecture" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL -o /tmp/evil-helix.tar.gz \
+        "https://github.com/usagi-flow/evil-helix/releases/download/${EVIL_HELIX_VERSION}/evil-helix-${eharch}-linux.tar.gz"; \
+    mkdir -p /opt/evil-helix; \
+    tar -xzf /tmp/evil-helix.tar.gz -C /opt/evil-helix --strip-components=1; \
+    rm /tmp/evil-helix.tar.gz
+
+COPY --chmod=0755 config/bin/hx config/bin/ehx /usr/local/bin/
+
+RUN set -eux; \
+    hx --version; \
+    ehx --version
 
 # ---------------------------------------------------------------------------
 # Neovim
 #
-# Ubuntu 24.04 only packages 0.9.5, which is too old for current plugin stacks,
-# so take the upstream tarball.
+# Still the upstream tarball on 26.04, though for a different reason than on
+# 24.04 (which packaged 0.9.5 and was simply too old). Resolute ships 0.11.6,
+# which does run this config, but 0.12.0 landed just after the LTS freeze and
+# an LTS will not rebase, so apt would leave us a minor version behind for five
+# years while the plugin stack keeps moving. The tarball is pinned and cheap.
 # ---------------------------------------------------------------------------
 RUN set -eux; \
     case "$(dpkg --print-architecture)" in \
@@ -155,6 +196,9 @@ ENV PATH=/home/${USERNAME}/.local/bin:$PATH
 WORKDIR /home/${USERNAME}
 
 COPY --chown=${USER_UID}:${USER_GID} config/helix/ .config/helix/
+# Only config.toml. languages.toml is shared from .config/helix above, so the
+# LSP and DAP setup has one home rather than two that drift apart.
+COPY --chown=${USER_UID}:${USER_GID} config/evil-helix/ .config/evil-helix/
 COPY --chown=${USER_UID}:${USER_GID} config/nvim/  .config/nvim/
 COPY --chown=${USER_UID}:${USER_GID} config/tmux.conf .tmux.conf
 COPY --chown=${USER_UID}:${USER_GID} config/bashrc.extra /tmp/bashrc.extra

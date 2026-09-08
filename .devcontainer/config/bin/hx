@@ -1,0 +1,9 @@
+#!/bin/sh
+# Mainline Helix.
+#
+# HELIX_RUNTIME is deliberately not exported globally in the image: two builds
+# of Helix live side by side here, and whichever value won would silently feed
+# one editor the other's grammars and themes. Each wrapper sets it for its own
+# process only.
+export HELIX_RUNTIME=/opt/helix/runtime
+exec /opt/helix/hx "$@"

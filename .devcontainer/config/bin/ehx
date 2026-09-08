@@ -1,0 +1,14 @@
+#!/bin/sh
+# evil-helix: Helix with Vim keybindings compiled in.
+#
+# The upstream binary is also called hx and also reads ~/.config/helix, so this
+# wrapper points it at its own runtime and its own config.toml. languages.toml
+# is intentionally NOT redirected: both editors share the LSP and DAP setup in
+# ~/.config/helix/languages.toml, so there is one place to change a language
+# server rather than two that drift.
+#
+# Helix's argument parser lets the last --config win, so `ehx --config other.toml`
+# still overrides this. EVIL_HELIX_CONFIG overrides it for a whole shell.
+export HELIX_RUNTIME=/opt/evil-helix/runtime
+exec /opt/evil-helix/hx \
+    --config "${EVIL_HELIX_CONFIG:-$HOME/.config/evil-helix/config.toml}" "$@"

@@ -4,7 +4,11 @@
 export PATH="$HOME/.local/bin:/usr/local/cargo/bin:$PATH"
 export EDITOR=hx
 export VISUAL=hx
-export HELIX_RUNTIME=/opt/helix/runtime
+
+# HELIX_RUNTIME is intentionally not exported here. Mainline Helix and
+# evil-helix both read it, and a single global value would point one of them at
+# the other's grammars. The hx and ehx wrappers in /usr/local/bin each set it
+# for their own process.
 
 # uv: keep downloaded interpreters and the cache where the volumes are.
 export UV_PYTHON_INSTALL_DIR=/opt/python
@@ -21,6 +25,7 @@ mkdir -p "$(dirname "$HISTFILE")"
 alias ll='ls -lah --color=auto'
 alias g='git'
 alias hxr='hx .'
+alias ehxr='ehx .'
 
 # Activate a project venv if one exists in the current directory.
 venv() {

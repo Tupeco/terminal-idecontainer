@@ -1,0 +1,69 @@
+# evil-helix configuration. Read only by `ehx`, never by `hx`.
+#
+# Kept deliberately close to config/helix/config.toml so the two editors feel
+# the same everywhere except the keybindings. If you change something here that
+# is not about Vim, change it there too.
+
+# A different theme is the cheapest way to know at a glance which build you are
+# in, since the two are otherwise visually identical. Change it if you would
+# rather have them match; the mode indicator says VIS instead of SEL either way.
+theme = "gruvbox_dark_hard"
+
+[editor]
+# The whole point of this build. Setting it to false turns the fork back into
+# stock Helix at runtime, which is a useful A/B when a binding surprises you.
+evil = true
+
+line-number = "relative"
+cursorline = true
+color-modes = true
+true-color = true
+bufferline = "multiple"
+completion-timeout = 50
+idle-timeout = 50
+clipboard-provider = "termcode"
+
+[editor.statusline]
+left = ["mode", "spinner", "version-control", "file-name", "read-only-indicator", "file-modification-indicator"]
+right = ["diagnostics", "selections", "position", "file-encoding", "file-type"]
+
+[editor.cursor-shape]
+insert = "bar"
+normal = "block"
+select = "underline"
+
+[editor.file-picker]
+hidden = false
+git-ignore = true
+
+[editor.indent-guides]
+render = true
+character = "┆"
+
+[editor.lsp]
+display-messages = true
+display-inlay-hints = true
+
+[editor.soft-wrap]
+enable = true
+
+# ---------------------------------------------------------------------------
+# Keys
+#
+# evil-helix already provides d/c/y/x/a, the i modifier, w/W/e/E/b/B/0/$ and
+# visual-line V, so this section only covers what Vim gives you that neither
+# Helix nor the fork binds. Add to it as you find gaps; the project treats
+# missing bindings as issues worth filing.
+# ---------------------------------------------------------------------------
+
+[keys.normal]
+C-s = ":write"
+"{" = ["goto_prev_paragraph"]
+"}" = ["goto_next_paragraph"]
+
+[keys.normal.space]
+w = ":write"
+q = ":quit"
+
+[keys.insert]
+j = { k = "normal_mode" }
