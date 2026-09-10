@@ -35,7 +35,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential pkg-config libssl-dev \
         ca-certificates curl wget gnupg \
-        git git-lfs openssh-client \
+        git git-lfs git-delta openssh-client \
         tmux ripgrep fd-find fzf jq tree less \
         unzip zip xz-utils \
         lldb iproute2 \
@@ -91,7 +91,25 @@ RUN set -eux; \
 # soon as the volume is attached. /etc/gitconfig is part of the image.
 #
 # To narrow it, replace '*' with the specific paths you actually push from.
-RUN git config --system --add safe.directory '*'
+#
+# The delta settings ride along here for the same reason. delta is the pager
+# that gives `git diff <rev>..<rev>` a two-column view with n/N to jump between
+# files, which is the shell-side answer to what diffview-plus does inside
+# Neovim. Anything you later set with `git config --global` overrides all of
+# this, since global beats system.
+RUN set -eux; \
+    git config --system --add safe.directory '*'; \
+    git config --system core.pager delta; \
+    git config --system interactive.diffFilter 'delta --color-only'; \
+    git config --system delta.navigate true; \
+    git config --system delta.line-numbers true; \
+    git config --system delta.side-by-side true; \
+    git config --system diff.colorMoved default
+
+# delta pages its own output, and its n/N navigation is implemented with less's
+# search. Pinning this matters because $PAGER here may well be moor: delta would
+# honour it and navigation would quietly stop working.
+ENV DELTA_PAGER=less
 
 # ---------------------------------------------------------------------------
 # Rust

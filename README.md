@@ -151,6 +151,7 @@ workspace volume is untouched by container restarts.
 | basedpyright, ruff | Python LSP, lint, format |
 | debugpy, lldb-dap | Debug adapters for Python and Rust |
 | Claude Code | Native binary, no Node.js dependency |
+| delta | Side-by-side `git diff`, `n`/`N` between files |
 | tmux, ripgrep, fd, fzf, jq, git-lfs | Supporting tools |
 | Node.js 22 | Only for npx-based MCP servers |
 
@@ -180,6 +181,59 @@ gets its own `HELIX_RUNTIME` and its own `config.toml`. They deliberately
 is configured once. The two use different themes purely so you can tell at a
 glance which one you are in; evil-helix also calls the mode `VIS` rather than
 `SEL`.
+
+## Comparing revisions
+
+The PyCharm habit of comparing the whole repo between two branches or tags,
+with a file list and a keystroke to move between changed files, has a direct
+equivalent in Neovim:
+
+```vim
+:DiffviewOpen main..feature        " branch vs branch
+:DiffviewOpen v1.0..v2.0           " tag vs tag
+:DiffviewOpen origin/main...HEAD   " merge base, i.e. what a PR would show
+:DiffviewOpen HEAD~5               " the last five commits
+```
+
+A file panel runs down the left, the diff is side-by-side on the right, and
+`<tab>` / `<s-tab>` move to the next and previous changed file without going
+back to the panel. `<leader>b` hides the panel when you want the full width,
+`g?` lists every binding. There are leader mappings for the common entries:
+
+| Key | Does |
+|---|---|
+| `<leader>gd` | Diff the working tree |
+| `<leader>gc` | Prompts `:DiffviewOpen ` — type a revision and press enter |
+| `<leader>gh` | History for the current file |
+| `<leader>gH` | History for the whole repo |
+| `<leader>gq` | Close the diffview tab |
+
+The plugin is [diffview-plus.nvim](https://github.com/dlyongemallo/diffview-plus.nvim),
+which is a fork. Every guide points at `sindrets/diffview.nvim`, but that has
+had no commits since August 2024 even though issues are still filed against it;
+the fork is where fixes actually land, and it adds a directory-diff mode
+(`:DiffviewDiffDirs`) that needs no repository at all.
+
+Helix has no plugin system, so for `hx` and for the plain shell the equivalent
+is **delta**, wired in as git's pager system-wide:
+
+```sh
+git diff main..feature      # two columns, n and N jump between files
+```
+
+`n` and `N` come from `delta.navigate`, which is implemented with `less`'s
+search — hence `DELTA_PAGER=less` in the Dockerfile. Without it delta would
+honour `$PAGER`, and if that is `moor` the navigation silently stops working.
+
+Side-by-side is on by default, which is cramped in a narrow tmux pane. For one
+invocation:
+
+```sh
+git -c delta.side-by-side=false diff main..feature
+```
+
+All of the delta settings live in `/etc/gitconfig` rather than your global
+config, so `git config --global` still overrides any of them.
 
 ## Volumes
 

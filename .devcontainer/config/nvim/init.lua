@@ -192,6 +192,44 @@ require("lazy").setup({
     config = function() require("gitsigns").setup() end,
   },
 
+  -- Whole-repo diff between any two revisions: a file panel down the left,
+  -- side-by-side diff on the right, <tab>/<s-tab> to walk the changed files.
+  -- This is the closest thing here to PyCharm's "Compare with Branch".
+  --
+  -- Deliberately the fork, not sindrets/diffview.nvim. The original is the one
+  -- every guide links to, but it has had no commits since August 2024 while
+  -- issues keep being filed against it; this fork is where the fixes land.
+  {
+    "dlyongemallo/diffview-plus.nvim",
+    version = "*",
+    -- The Lua module is still `diffview`, so lazy.nvim cannot infer it from
+    -- the repository name.
+    main = "diffview",
+    cmd = {
+      "DiffviewOpen", "DiffviewClose", "DiffviewFileHistory",
+      "DiffviewToggleFiles", "DiffviewFocusFiles", "DiffviewDiffDirs",
+    },
+    keys = {
+      { "<leader>gd", "<cmd>DiffviewOpen<cr>", desc = "Diff working tree" },
+      -- Left deliberately unterminated: type the revision and hit enter, e.g.
+      -- `main..feature`, `v1.0..v2.0`, or `origin/main...HEAD` for PR-style.
+      { "<leader>gc", ":DiffviewOpen ", desc = "Compare with rev (type one)" },
+      { "<leader>gh", "<cmd>DiffviewFileHistory %<cr>", desc = "History: this file" },
+      { "<leader>gH", "<cmd>DiffviewFileHistory<cr>", desc = "History: whole repo" },
+      { "<leader>gq", "<cmd>DiffviewClose<cr>", desc = "Close diffview" },
+    },
+    opts = {
+      -- Better highlighting of what actually changed within a changed line.
+      enhanced_diff_hl = true,
+      view = {
+        -- Two panes, old on the left and new on the right, which is the layout
+        -- the PyCharm habit expects.
+        default = { layout = "diff2_horizontal" },
+        merge_tool = { layout = "diff3_horizontal" },
+      },
+    },
+  },
+
   {
     "stevearc/conform.nvim",
     config = function()
