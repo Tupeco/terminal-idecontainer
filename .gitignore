@@ -1,0 +1,10 @@
+# Rendered from docker-compose.yml.template by `./dev setup`. It is specific to
+# this copy of the template: it carries the project name, which names every
+# volume, and the absolute host paths added by `./dev mount`. Neither travels.
+# Re-create it with `./dev setup <project-name>`.
+/.devcontainer/docker-compose.yml
+/.devcontainer/docker-compose.yml.tmp
+
+# The host side of the /mount bind: context handed to Claude, generated output
+# worth keeping, host clones you push to. Yours, not the template's.
+/mount/

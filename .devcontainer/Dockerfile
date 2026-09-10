@@ -81,6 +81,18 @@ RUN set -eux; \
     echo "${USERNAME} ALL=(ALL) NOPASSWD:ALL" > "/etc/sudoers.d/${USERNAME}"; \
     chmod 0440 "/etc/sudoers.d/${USERNAME}"
 
+# Repositories reached through /mount and /other-mounts are owned by the host
+# user, not by dev, so git refuses them as "dubious ownership" the moment you
+# try to commit or push through a bind mount. This is a single-user container
+# where every mounted path is deliberately yours, so the check buys nothing.
+#
+# Note this has to be --system: `git config --global` writes under
+# ~/.config/git, which is a volume, and a build-time write there is masked as
+# soon as the volume is attached. /etc/gitconfig is part of the image.
+#
+# To narrow it, replace '*' with the specific paths you actually push from.
+RUN git config --system --add safe.directory '*'
+
 # ---------------------------------------------------------------------------
 # Rust
 #
@@ -211,6 +223,21 @@ RUN cat /tmp/bashrc.extra >> "/home/${USERNAME}/.bashrc" \
                 "/home/${USERNAME}/.config/git" \
                 "/home/${USERNAME}/.claude"
 
+# Claude Code splits its state across two locations: OAuth tokens go in
+# ~/.claude/, but the account identity and onboarding state go in
+# ~/.claude.json, a single file in the home directory that no volume covers.
+# Persisting only ~/.claude therefore keeps your chat history and still makes
+# you log in again after every rebuild.
+#
+# Docker cannot mount a volume onto a single file, so the real file lives
+# inside the ~/.claude volume and ~/.claude.json is a link into it. The seed
+# below is what the volume is populated from on first `up`. bashrc.extra
+# re-establishes the link if anything ever replaces it; see the note there for
+# why that is not redundant.
+RUN set -eux; \
+    printf '{}\n' > "/home/${USERNAME}/.claude/claude.json"; \
+    ln -s "/home/${USERNAME}/.claude/claude.json" "/home/${USERNAME}/.claude.json"
+
 # Bake plugins and treesitter parsers into the image so first launch is instant
 # and works with no network.
 RUN nvim --headless "+Lazy! sync" +qa 2>&1 | tail -n 30 \
@@ -218,7 +245,8 @@ RUN nvim --headless "+Lazy! sync" +qa 2>&1 | tail -n 30 \
     || echo "NOTE: some parsers failed to build; run :TSUpdate in the container"
 
 # Claude Code. The native installer needs no Node.js and drops a self-contained
-# binary in ~/.local/bin. Credentials land in ~/.claude, which is a volume.
+# binary in ~/.local/bin. Tokens and history land in ~/.claude, which is a
+# volume; the account identity lands in ~/.claude.json, linked into it above.
 RUN curl -fsSL https://claude.ai/install.sh | bash \
     && "/home/${USERNAME}/.local/bin/claude" --version
 

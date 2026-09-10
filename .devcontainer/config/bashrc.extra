@@ -29,6 +29,27 @@ alias ehxr='ehx .'
 alias gitl='git log --all --oneline --decorate --graph --date-order'
 alias gitlog='git log --all --decorate --graph --date-order'
 
+# Keep ~/.claude.json pointing into the ~/.claude volume.
+#
+# The Dockerfile creates this link, so why do it again on every shell? Because
+# the link only survives as long as nothing replaces it. An application that
+# saves a file by write-temp-then-rename does not follow the link, it renames
+# over it, leaving a plain file in the container layer that quietly stops
+# persisting until the next rebuild. Checking here costs nothing and turns a
+# silent regression into a self-repair. Copying the stray file back onto the
+# volume before relinking means the login it contains survives the repair.
+_link_claude_json() {
+  local real="$HOME/.claude/claude.json" link="$HOME/.claude.json"
+  [ -d "$HOME/.claude" ] || return 0
+  [ -L "$link" ] && return 0
+  if [ -f "$link" ]; then
+    cp -f "$link" "$real" && rm -f "$link"
+  fi
+  [ -e "$real" ] || printf '{}\n' > "$real"
+  ln -s "$real" "$link"
+}
+_link_claude_json
+
 # Activate a project venv if one exists in the current directory.
 venv() {
   if [ -f .venv/bin/activate ]; then

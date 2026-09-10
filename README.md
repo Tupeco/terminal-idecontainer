@@ -7,12 +7,19 @@ The design goal is that a laptop suspend cannot break your session. Nothing
 here maintains a stateful connection from your Mac into the container. The
 editor process runs inside, under tmux; you attach and detach at will.
 
+This is a **template**, not a single environment: copy the repo per project and
+run `./dev setup <project-name>`. See [Using this as a
+template](#using-this-as-a-template).
+
 ## Layout
 
 ```
 .devcontainer/
   Dockerfile              image: toolchains, editors, Claude Code
-  docker-compose.yml      service + named volumes
+  docker-compose.yml.template
+                          service + named volumes, with the project name
+                          left as a placeholder
+  docker-compose.yml      rendered from it by `./dev setup`; gitignored
   devcontainer.json       optional, for devcontainer-spec tooling
   config/
     helix/config.toml       Helix editor settings
@@ -22,15 +29,19 @@ editor process runs inside, under tmux; you attach and detach at will.
     bin/hx, bin/ehx         wrappers that pin each editor to its own runtime
     tmux.conf               OSC 52 passthrough, sane defaults
     bashrc.extra            PATH, history persistence, `work` helper
+mount/                  bind-mounted at /mount inside; gitignored
 dev                     lifecycle wrapper script
 ```
+
+Run `./dev` with no arguments for the full command list.
 
 ## First run
 
 ```sh
 chmod +x dev
-./dev up          # builds the image (10-15 min first time), starts container
-./dev attach      # drops you into tmux inside the container
+./dev setup myproject   # renders docker-compose.yml for this project
+./dev up                # builds the image (10-15 min first time), starts it
+./dev attach            # drops you into tmux inside the container
 ```
 
 Then, inside:
@@ -42,8 +53,76 @@ claude                              # one-time browser OAuth
 cd ~/src && git clone <your-repo>
 ```
 
-Both the git config and the Claude credentials live in volumes, so you do this
-once, not on every rebuild.
+Both the git config and the Claude login live in volumes, so you do this once
+per project, not on every rebuild.
+
+## Using this as a template
+
+Copy the repo, name it, start it:
+
+```sh
+cp -R idecontainer ~/git/newthing && cd ~/git/newthing
+./dev setup newthing
+./dev up
+```
+
+`setup` renders `.devcontainer/docker-compose.yml` from
+`docker-compose.yml.template`, substituting the project name. That name becomes
+the compose project name, and compose prefixes every named volume with it, so
+`newthing_workspace` and `otherthing_workspace` are simply different volumes.
+Nothing else needs renaming, and two copies never collide: separate source,
+separate caches, separate git identity, separate Claude Code login and history.
+
+The image tag is per-project too (`newthing-dev:latest`). Each copy owns its
+Dockerfile and will drift as you add packages; a shared tag would let one
+project's rebuild silently swap out the image another project is running.
+
+The rendered file is gitignored, because it holds this machine's project name
+and the absolute host paths from `./dev mount`. If you change the template
+later — after pulling template updates into a project — re-render with:
+
+```sh
+./dev setup newthing --force
+```
+
+which rewrites the file and carries your mount entries across. Without
+`--force`, `setup` refuses to overwrite.
+
+Project names follow compose's own rule: lowercase letters, digits, dashes and
+underscores, starting with a letter or digit. `setup` checks this up front so
+you get an explanation rather than a compose error three commands later.
+
+## Sharing files with the host
+
+Source deliberately lives in a volume you cannot see from Finder (see [Why a
+named volume](#why-a-named-volume-instead-of-a-bind-mount)), so there are two
+bind mounts for the cases where the boundary needs to be crossed.
+
+**`<repo>/mount` is always available at `/mount` inside the container.** It is
+the general-purpose exchange: context to hand to Claude, generated artifacts
+worth keeping, or a clone on the host that you commit into from inside and push
+from outside. It is gitignored, and `./dev up` creates it if it is missing.
+
+**Anything else, on demand:**
+
+```sh
+./dev mount ~/data/corpus corpus   # -> /other-mounts/corpus
+./dev mount                        # list what is mounted
+./dev unmount corpus
+```
+
+`mount` writes the entry into `docker-compose.yml` between two marker comments,
+resolving the host path to an absolute one so the entry does not depend on
+where you ran the command. Run `./dev up` afterwards to apply it; that recreates
+the container, which is the one operation here that does discard your tmux
+session.
+
+Git repositories reached through either mount are owned by the host user rather
+than by `dev`, which git rejects as "dubious ownership" the moment you try to
+commit. The image sets `safe.directory = *` in `/etc/gitconfig` to switch that
+check off, on the grounds that this is a single-user container where every
+mounted path is deliberately yours. Narrow it to specific paths there if you
+would rather.
 
 ## Daily use
 
@@ -104,16 +183,47 @@ glance which one you are in; evil-helix also calls the mode `VIS` rather than
 
 ## Volumes
 
+Every volume below is created as `<project>_<name>`, so these are per-project
+and nothing is shared between copies of the template.
+
 | Volume | Mounted at | Contents |
 |---|---|---|
 | `workspace` | `/home/dev/src` | Your cloned repositories |
 | `cargo-registry` | `/usr/local/cargo/registry` | Crate downloads |
 | `uv-cache` | `/home/dev/.cache/uv` | Python wheel cache |
 | `nvim-state` | `/home/dev/.local/state/nvim` | Undo history, shada, shell history |
-| `claude-config` | `/home/dev/.claude` | Claude Code credentials and settings |
+| `claude-config` | `/home/dev/.claude` | Claude Code login, settings, chat history |
 | `git-config` | `/home/dev/.config/git` | Global git config |
 
-`./dev rebuild` keeps all of these. Only `./dev nuke` destroys them.
+`./dev rebuild` keeps all of these. Only `./dev nuke` destroys them, and it
+only destroys the current project's.
+
+The cost of full isolation is that a new project starts cold: it re-downloads
+the crate registry and Python wheels, and you log into Claude Code and set your
+git identity again. If that becomes tiresome, give the cache volumes a fixed
+`name:` in the template so compose stops prefixing them — but be aware that
+sharing `claude-config` would also merge chat history, because Claude Code keys
+history by working directory and every project's is `/home/dev/src`.
+
+### Staying logged in to Claude Code across rebuilds
+
+Claude Code splits its state in two. Tokens, settings and chat history go in
+`~/.claude`, which the `claude-config` volume covers. Account identity and
+onboarding state go in `~/.claude.json` — a single file in the home directory,
+outside that volume, and so lost on every rebuild. Persisting only `~/.claude`
+gets you your history back and still asks you to log in again, which is the
+behaviour you would otherwise be stuck explaining to yourself every few weeks.
+
+Docker cannot mount a volume onto a single file, so the real file lives inside
+the `~/.claude` volume and `~/.claude.json` is a symlink into it, created in the
+Dockerfile.
+
+There is a known failure mode: an application that saves a file by
+write-temp-then-rename does not follow a symlink, it renames over it, leaving a
+plain file in the container layer that silently stops persisting. `bashrc.extra`
+therefore re-checks the link on every interactive shell, and if it finds a plain
+file it copies the contents onto the volume before relinking — so the login the
+stray file contains survives the repair rather than being thrown away.
 
 ### A note on UID/GID
 
@@ -204,5 +314,13 @@ bind mount for the config directory in `docker-compose.yml`:
 - **Claude Code auto-updates in the background,** writing to `~/.local/bin`.
   That is not a volume, so an update is lost on rebuild and simply reapplies.
   Set `DISABLE_AUTOUPDATER=1` in the environment if you want version stability.
+- **`./dev mount` changes need `./dev up`, which recreates the container.**
+  Everything in the volumes survives, but the running tmux session does not.
+  Adding mounts is the one routine operation here that costs you your session,
+  so do it before you settle in rather than mid-afternoon.
+- **`safe.directory = *` is set system-wide in the image.** It is what makes
+  committing to a host repo through a bind mount work at all, but it does turn
+  off a real check. Narrow it in `/etc/gitconfig` if this container ever stops
+  being single-user.
 - **First build takes a while** because it compiles treesitter parsers and
   downloads two toolchains. Subsequent builds hit the layer cache.

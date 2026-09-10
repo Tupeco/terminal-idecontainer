@@ -1,0 +1,91 @@
+# Template. `./dev setup <project-name>` renders this into docker-compose.yml;
+# nothing runs against this file directly.
+#
+# __PROJECT_NAME__ becomes the compose project name, and compose prefixes every
+# named volume with it. That is what makes this a template rather than a single
+# environment: two copies on the same machine never share a workspace, a cache,
+# a git identity or a Claude Code login, without you having to rename anything
+# below.
+
+name: __PROJECT_NAME__
+
+services:
+  dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        USER_UID: "${USER_UID:-1000}"
+        USER_GID: "${USER_GID:-1000}"
+
+    # Tagged per project as well. Each copy of this template owns its Dockerfile
+    # and will drift as you add packages to it; a shared tag would mean one
+    # project's rebuild silently swaps out the image another project is running.
+    image: __PROJECT_NAME__-dev:latest
+
+    hostname: __PROJECT_HOSTNAME__
+    init: true
+    stdin_open: true
+    tty: true
+
+    # Survives client disconnects by design.
+    command: ["sleep", "infinity"]
+
+    environment:
+      TERM: xterm-256color
+      COLORTERM: truecolor
+      # macOS Docker Desktop exposes the host SSH agent at this fixed path.
+      SSH_AUTH_SOCK: /ssh-agent
+
+    volumes:
+      # Source lives in a named volume, not a bind mount. On macOS this avoids
+      # virtiofs, which is what makes LSP indexing crawl when the editor runs
+      # inside the container.
+      - workspace:/home/dev/src
+
+      # Caches worth keeping across rebuilds.
+      - cargo-registry:/usr/local/cargo/registry
+      - uv-cache:/home/dev/.cache/uv
+      - nvim-state:/home/dev/.local/state/nvim
+
+      # Claude Code credentials and chat history, so you authenticate once
+      # rather than per rebuild. See the note on ~/.claude.json in bashrc.extra:
+      # this volume alone is not sufficient to keep you logged in.
+      - claude-config:/home/dev/.claude
+
+      # git config --global writes to ~/.config/git/config under XDG, so your
+      # identity and aliases persist without bind-mounting host dotfiles.
+      - git-config:/home/dev/.config/git
+
+      # Host SSH agent, for cloning private repos without copying keys into the
+      # image. macOS Docker Desktop only; see README for Linux.
+      - /run/host-services/ssh-auth.sock:/ssh-agent
+
+      # The exchange directory: <repo>/mount on the Mac, /mount inside. This is
+      # the seam between the two worlds — context to hand to Claude, generated
+      # artifacts to keep, or a host clone you push commits into. A bind mount
+      # precisely because both sides must see it; keep source you actively edit
+      # in the workspace volume above, where virtiofs is not in the way.
+      - ../mount:/mount
+
+      # Anything added by `./dev mount <host-path> <name>` lands between these
+      # two markers, as /other-mounts/<name>. The markers are how the script
+      # finds its own entries, so leave them in place; the lines between them
+      # are ordinary compose syntax and safe to edit or delete by hand.
+      # >>> extra mounts
+      # <<< extra mounts
+
+    # rust-analyzer and basedpyright are memory-hungry on large workspaces.
+    # Raise if you index something big; remove to use Docker's defaults.
+    deploy:
+      resources:
+        limits:
+          memory: 8g
+
+volumes:
+  workspace:
+  cargo-registry:
+  uv-cache:
+  nvim-state:
+  claude-config:
+  git-config:

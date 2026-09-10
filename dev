@@ -1,16 +1,41 @@
 #!/usr/bin/env bash
-# Thin wrapper around the container lifecycle. The interesting part is `attach`,
-# which reconnects to a tmux session that never stopped running.
+# Thin wrapper around the container lifecycle. Two things are worth knowing:
+#
+#   `setup`  renders docker-compose.yml from the template, which is what turns
+#            this repo into something you copy per project rather than a single
+#            environment you keep re-pointing at different code.
+#   `attach` reconnects to a tmux session that never stopped running, which is
+#            the whole reason the container outlives your laptop's sleep cycle.
 set -euo pipefail
 
-cd "$(dirname "$0")/.devcontainer"
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+DCDIR="$ROOT/.devcontainer"
+TEMPLATE="$DCDIR/docker-compose.yml.template"
+COMPOSE_FILE="$DCDIR/docker-compose.yml"
+MOUNT_DIR="$ROOT/mount"
+
+MARK_BEGIN='# >>> extra mounts'
+MARK_END='# <<< extra mounts'
 
 COMPOSE=(docker compose)
 SERVICE=dev
 
+die() { printf 'error: %s\n' "$*" >&2; exit 1; }
+
 usage() {
   cat <<'EOF'
 Usage: ./dev <command>
+
+First, once per copy of this template:
+
+  setup <name> [--force]
+            Render docker-compose.yml from the template for a project called
+            <name>. The name prefixes every named volume, so each project gets
+            its own workspace, caches, git identity and Claude Code login.
+            --force re-renders over an existing file, carrying your `mount`
+            entries across (use it after pulling template changes).
+
+Day to day:
 
   up        Build if needed and start the container in the background
   attach    Attach to the persistent tmux session (use this every morning)
@@ -19,34 +44,186 @@ Usage: ./dev <command>
   stop      Stop the container (volumes and their contents survive)
   rebuild   Rebuild the image from scratch, keeping all volumes
   nuke      Remove the container AND all volumes, including your source
+
+Sharing directories with the host:
+
+  <repo>/mount is always bind-mounted at /mount inside the container.
+
+  mount <host-path> <name>
+            Also bind <host-path> at /other-mounts/<name>
+  mount     With no arguments, list the extra mounts
+  unmount <name>
+            Remove the /other-mounts/<name> entry
+
+  Mount changes are written to docker-compose.yml; run `./dev up` to apply.
 EOF
 }
 
+require_setup() {
+  [ -f "$COMPOSE_FILE" ] || die "not set up yet in $(basename "$ROOT") — run: ./dev setup <project-name>"
+}
+
+# The lines currently between the two markers, if any.
+extra_mounts() {
+  awk -v b="$MARK_BEGIN" -v e="$MARK_END" '
+    index($0, e) { f = 0 }
+    f
+    index($0, b) { f = 1 }
+  ' "$COMPOSE_FILE"
+}
+
+# Insert a block immediately above the closing marker.
+insert_mounts() {
+  local block="$1" tmp
+  [ -n "$block" ] || return 0
+  tmp="$COMPOSE_FILE.tmp"
+  awk -v e="$MARK_END" -v ins="$block" '
+    index($0, e) { print ins }
+    { print }
+  ' "$COMPOSE_FILE" > "$tmp"
+  mv "$tmp" "$COMPOSE_FILE"
+}
+
+cmd_setup() {
+  local name="${1:-}" force="${2:-}" carried="" host tmp
+  [ -n "$name" ] || die "usage: ./dev setup <project-name> [--force]"
+  [ -f "$TEMPLATE" ] || die "missing template: $TEMPLATE"
+
+  # Compose's own rule for project names, enforced here so the failure arrives
+  # with an explanation rather than as a compose error three commands later.
+  [[ "$name" =~ ^[a-z0-9][a-z0-9_-]*$ ]] \
+    || die "project name must be lowercase letters, digits, dashes or underscores, starting with a letter or digit (got: $name)"
+
+  if [ -f "$COMPOSE_FILE" ]; then
+    [ "$force" = "--force" ] \
+      || die "$COMPOSE_FILE already exists. Pass --force to re-render it (your mount entries are carried over)."
+    carried="$(extra_mounts)"
+  fi
+
+  # Underscores are legal in a compose project name but not in a hostname.
+  host="${name//_/-}"
+
+  tmp="$COMPOSE_FILE.tmp"
+  sed -e "s/__PROJECT_NAME__/$name/g" \
+      -e "s/__PROJECT_HOSTNAME__/$host/g" "$TEMPLATE" > "$tmp"
+  mv "$tmp" "$COMPOSE_FILE"
+  insert_mounts "$carried"
+
+  mkdir -p "$MOUNT_DIR"
+
+  printf 'Set up project "%s".\n' "$name"
+  printf '  compose file : %s\n' "${COMPOSE_FILE#"$ROOT"/}"
+  printf '  volumes      : %s_workspace, %s_claude-config, ...\n' "$name" "$name"
+  printf '  exchange dir : %s -> /mount\n' "${MOUNT_DIR#"$ROOT"/}"
+  if [ -n "$carried" ]; then
+    printf '  carried over %d extra mount(s)\n' "$(printf '%s\n' "$carried" | grep -c .)"
+  fi
+  printf '\nNext: ./dev up\n'
+}
+
+cmd_mount() {
+  require_setup
+  local host_path="${1:-}" name="${2:-}" abs
+
+  if [ -z "$host_path" ]; then
+    local current; current="$(extra_mounts)"
+    if [ -z "$current" ]; then
+      echo "No extra mounts. Add one with: ./dev mount <host-path> <name>"
+    else
+      echo "Extra mounts (from ${COMPOSE_FILE#"$ROOT"/}):"
+      printf '%s\n' "$current" | sed 's/^ *- */  /; s/"//g'
+    fi
+    return 0
+  fi
+
+  [ -n "$name" ] || die "usage: ./dev mount <host-path> <mount-name>"
+  [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] \
+    || die "mount name must be alphanumeric, dashes, dots or underscores (got: $name)"
+  [ -e "$host_path" ] || die "no such file or directory: $host_path"
+
+  # Absolute, so the entry does not depend on where you ran this from. The
+  # generated compose file is local to this copy anyway, so it is free to name
+  # host paths directly.
+  if [ -d "$host_path" ]; then
+    abs="$(cd "$host_path" && pwd)"
+  else
+    abs="$(cd "$(dirname "$host_path")" && pwd)/$(basename "$host_path")"
+  fi
+
+  if grep -qF ":/other-mounts/$name\"" "$COMPOSE_FILE"; then
+    die "/other-mounts/$name is already mounted. Remove it first: ./dev unmount $name"
+  fi
+
+  insert_mounts "      - \"$abs:/other-mounts/$name\""
+  printf 'Mounted %s -> /other-mounts/%s\n' "$abs" "$name"
+  printf 'Run ./dev up to apply (this recreates the container; tmux state inside is lost).\n'
+}
+
+cmd_unmount() {
+  require_setup
+  local name="${1:-}" tmp
+  [ -n "$name" ] || die "usage: ./dev unmount <mount-name>"
+  if ! grep -qF ":/other-mounts/$name\"" "$COMPOSE_FILE"; then
+    die "/other-mounts/$name is not mounted. See: ./dev mount"
+  fi
+
+  tmp="$COMPOSE_FILE.tmp"
+  grep -vF ":/other-mounts/$name\"" "$COMPOSE_FILE" > "$tmp"
+  mv "$tmp" "$COMPOSE_FILE"
+  printf 'Unmounted /other-mounts/%s. Run ./dev up to apply.\n' "$name"
+}
+
 case "${1:-}" in
+  setup)
+    cmd_setup "${2:-}" "${3:-}"
+    ;;
+  mount)
+    cmd_mount "${2:-}" "${3:-}"
+    ;;
+  unmount)
+    cmd_unmount "${2:-}"
+    ;;
   up)
+    require_setup
+    # Docker would create this as root if it were missing, leaving you a
+    # directory inside the container you cannot write to.
+    mkdir -p "$MOUNT_DIR"
+    cd "$DCDIR"
     "${COMPOSE[@]}" up -d --build
     echo "Container running. Attach with: ./dev attach"
     ;;
   attach)
+    require_setup
+    cd "$DCDIR"
     exec "${COMPOSE[@]}" exec "$SERVICE" bash -lc 'tmux new-session -A -s main'
     ;;
   shell)
+    require_setup
+    cd "$DCDIR"
     exec "${COMPOSE[@]}" exec "$SERVICE" bash -l
     ;;
   clone)
-    [ $# -ge 2 ] || { echo "usage: ./dev clone <git-url>" >&2; exit 1; }
+    require_setup
+    [ $# -ge 2 ] || die "usage: ./dev clone <git-url>"
+    cd "$DCDIR"
     "${COMPOSE[@]}" exec "$SERVICE" bash -lc "cd ~/src && git clone '$2'"
     ;;
   stop)
+    require_setup
+    cd "$DCDIR"
     "${COMPOSE[@]}" stop
     ;;
   rebuild)
+    require_setup
+    cd "$DCDIR"
     "${COMPOSE[@]}" build --no-cache
     "${COMPOSE[@]}" up -d
     ;;
   nuke)
+    require_setup
     read -r -p "This deletes the workspace volume and all source in it. Type YES: " ok
     [ "$ok" = "YES" ] || { echo "aborted"; exit 1; }
+    cd "$DCDIR"
     "${COMPOSE[@]}" down -v
     ;;
   *)
