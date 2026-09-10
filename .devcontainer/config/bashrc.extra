@@ -23,9 +23,11 @@ shopt -s histappend
 mkdir -p "$(dirname "$HISTFILE")"
 
 alias ll='ls -lah --color=auto'
-alias g='git'
 alias hxr='hx .'
 alias ehxr='ehx .'
+
+alias gitl='git log --all --oneline --decorate --graph --date-order'
+alias gitlog='git log --all --decorate --graph --date-order'
 
 # Activate a project venv if one exists in the current directory.
 venv() {

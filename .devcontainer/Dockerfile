@@ -38,9 +38,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         git git-lfs openssh-client \
         tmux ripgrep fd-find fzf jq tree less \
         unzip zip xz-utils \
-        lldb \
+        lldb iproute2 \
         python3 python3-venv \
         sudo locales man-db procps \
+        bat du-dust duf eza moor \
     && ln -sf /usr/bin/fdfind /usr/local/bin/fd \
     && rm -rf /var/lib/apt/lists/*
 
