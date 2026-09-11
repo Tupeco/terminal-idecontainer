@@ -756,11 +756,27 @@ with two gaps worth knowing.
 
 `autoread` is on by default, so a buffer with no unsaved changes is silently
 reloaded from disk. But nvim does not poll — it only *checks* at certain
-moments. `tmux.conf` sets `focus-events on`, so switching tmux panes triggers a
-check. Sitting still inside the buffer does not.
+moments, and sitting still inside a buffer is not one of them.
 
-To force one: `:checktime`. To make it automatic, an autocmd on
-`FocusGained`/`BufEnter`/`CursorHold` that runs `:checktime`.
+`init.lua` now nudges it. A `:checktime` runs on `FocusGained`, `BufEnter`,
+`CursorHold`, `CursorHoldI` and `TermClose`, and a `FileChangedShellPost`
+autocmd prints which file was reloaded, so a buffer changing underneath you is
+never silent:
+
+```
+Reloaded from disk: watched.py
+```
+
+`CursorHold` fires after `updatetime` (250ms) of inactivity, so a file changed
+while you sit in it comes back almost immediately. `:checktime` by hand still
+works if you want to force one.
+
+Two guards in that autocmd worth knowing about, since both are failure modes
+rather than taste: `:checktime` is rejected while the command line is open, and
+it can knock you out of terminal mode — so it skips cmdline mode and terminal
+buffers. It uses `FileChangedShellPost` rather than `FileChangedShell` because
+defining the latter *replaces* nvim's own handling of the change instead of
+adding to it, which would disable the reload it is meant to announce.
 
 Two consequences that are easy to misread:
 
@@ -770,8 +786,9 @@ Two consequences that are easy to misread:
   buffer sends `didChange` and fixes both at once.
 - **If you also have unsaved changes, nothing reloads silently.** You get
   `W12: File "..." has changed and the buffer was changed in Vim as well` and
-  have to pick a side. That is by design; `:e!` takes the disk version and
-  discards yours.
+  have to pick a side. Verified: with a local edit pending, an external write
+  leaves your version in the buffer and prompts rather than clobbering it.
+  `:e!` takes the disk version and discards yours.
 
 ## Which tool for which job
 

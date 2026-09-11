@@ -100,6 +100,52 @@ vim.api.nvim_create_autocmd("BufWinEnter", {
 })
 
 -- ---------------------------------------------------------------------------
+-- Pick up files changed outside nvim
+--
+-- 'autoread' is on by default, but Nvim never polls — it only compares
+-- timestamps at certain moments. That is fine until something else is editing
+-- your files: Claude Code in another pane, a rebase, a formatter. These are the
+-- moments where a check is cheap. CursorHold fires after 'updatetime' (250ms)
+-- of inactivity, so a file changed while you sit in it comes back almost at
+-- once.
+--
+-- Worth knowing what this does *not* do: a buffer with unsaved changes is never
+-- silently replaced. That case raises W12 and leaves the decision to you.
+--
+-- It also matters to the language server. Nvim does not enable
+-- `workspace/didChangeWatchedFiles` on Linux, so until the buffer reloads the
+-- server still holds our stale copy and can report diagnostics against lines
+-- that no longer exist. The reload sends `didChange` and resyncs it.
+-- ---------------------------------------------------------------------------
+local external_changes = vim.api.nvim_create_augroup("external_changes", { clear = true })
+
+vim.api.nvim_create_autocmd(
+  { "FocusGained", "BufEnter", "CursorHold", "CursorHoldI", "TermClose" },
+  {
+    group = external_changes,
+    callback = function()
+      -- `:checktime` is rejected while the command line is open, and can knock
+      -- you out of terminal mode. Skip both rather than let it error.
+      if vim.fn.mode():match("^c") or vim.bo.buftype == "terminal" then return end
+      pcall(vim.cmd, "checktime")
+    end,
+  }
+)
+
+-- Announce it. A buffer silently changing underneath you is worse than the
+-- interruption, especially when you are about to wonder why your edit vanished.
+--
+-- FileChangedShellPost, not FileChangedShell: defining the latter *replaces*
+-- Nvim's own handling of the change rather than adding to it.
+vim.api.nvim_create_autocmd("FileChangedShellPost", {
+  group = external_changes,
+  callback = function(ev)
+    local name = ev.file or vim.api.nvim_buf_get_name(0)
+    vim.notify("Reloaded from disk: " .. vim.fn.fnamemodify(name, ":~:."), vim.log.levels.INFO)
+  end,
+})
+
+-- ---------------------------------------------------------------------------
 -- Quick reference: `:Tips`, plus a greeting on an otherwise empty start.
 -- Rendered from the bind-mounted TIPS.md; see lua/devtips.lua.
 -- ---------------------------------------------------------------------------
