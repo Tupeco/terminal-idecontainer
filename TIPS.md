@@ -93,6 +93,14 @@ somewhere new and silently leaves the original alone. See
 | `<leader>fh` | Search the help |
 | `g?` | Context-sensitive help inside diffview and neo-tree |
 
+**When something is stale**
+
+| | |
+|---|---|
+| `:lsp restart` | Reload the language server, e.g. after installing packages |
+| `:checktime` | Re-read files changed outside nvim |
+| `:checkhealth vim.lsp` | What the servers are doing (the old `:LspInfo`) |
+
 ## Working in a project
 
 How the editor is laid out and how to move around it.
@@ -669,6 +677,101 @@ what you dragged. Two ways out:
   helix, nvim and tmux, so the yank reaches the Mac clipboard anyway. This is
   usually the better path — it survives split boundaries and does not pick up
   line numbers or the tree.
+
+## Python environments and the language server
+
+### Finding your `.venv`
+
+Automatic. basedpyright's documented search order is:
+
+1. `venv` + `venvPath` (least recommended)
+2. `python.pythonPath`
+3. **`.venv` at the project root** — where `uv venv` puts it
+4. system Python
+
+So a plain `uv venv` in the repo needs no configuration at all.
+
+The one thing to get right is what counts as "project root": that is the LSP
+root, which nvim-lspconfig derives from the first of these it finds —
+`pyrightconfig.json`, `pyproject.toml`, `setup.py`, `setup.cfg`,
+`requirements.txt`, `Pipfile`, `.git`. Your `.venv` has to sit beside one of
+those. In a monorepo where the `.git` is several levels above the Python
+package, the root can land higher than you expect and the venv is missed.
+
+The escape hatch is a buffer-local command that nvim-lspconfig registers:
+
+```vim
+:LspPyrightSetPythonPath /path/to/.venv/bin/python
+:LspPyrightOrganizeImports
+```
+
+Do **not** reach for `venvPath`/`venv` in a config file. basedpyright's own docs
+call them discouraged, because they make pyright guess import paths from
+directory layout instead of asking the interpreter for its real `sys.path`.
+
+### After installing dependencies: restart the server
+
+Newly installed packages do not appear on their own, and the reason is specific
+to this container. Nvim's docs say `workspace/didChangeWatchedFiles` is enabled
+by default **"except on Linux"**. So the server is never told that files
+appeared. Add pyright resolving `sys.path` once at startup and caching import
+resolution, and a fresh `uv pip install` stays invisible.
+
+```vim
+:lsp restart                 " every client on this buffer
+:lsp restart basedpyright    " just the one
+```
+
+Definitely required if you created the venv *after* starting nvim — basedpyright
+will have bound to the system Python.
+
+Ruff needs nothing; it does not resolve imports against site-packages.
+
+### `:lsp` versus `:Lsp*`
+
+Nvim 0.12 ships a core `:lsp` command — `:lsp enable`, `:lsp disable`,
+`:lsp restart`, `:lsp stop`. Use it.
+
+Most guides on the internet still say `:LspRestart` and `:LspInfo`. Those come
+from nvim-lspconfig, and **you will not have them**, because
+`plugin/lspconfig.lua` opens with:
+
+```lua
+if vim.fn.exists(':lsp') == 2 then
+  return
+end
+```
+
+The plugin deliberately stands down once core provides the functionality. What
+you still get from it are the per-server commands defined in `lsp/*.lua`, which
+load off the runtimepath rather than from `plugin/` — hence
+`:LspPyrightSetPythonPath` and `:LspPyrightOrganizeImports` existing while
+`:LspRestart` does not. For the old `:LspInfo`, use `:checkhealth vim.lsp`,
+which is all it was ever an alias for.
+
+## Files changed outside nvim
+
+Claude Code editing a file you have open is the common case. Nvim mostly copes,
+with two gaps worth knowing.
+
+`autoread` is on by default, so a buffer with no unsaved changes is silently
+reloaded from disk. But nvim does not poll — it only *checks* at certain
+moments. `tmux.conf` sets `focus-events on`, so switching tmux panes triggers a
+check. Sitting still inside the buffer does not.
+
+To force one: `:checktime`. To make it automatic, an autocmd on
+`FocusGained`/`BufEnter`/`CursorHold` that runs `:checktime`.
+
+Two consequences that are easy to misread:
+
+- **The language server does not find out either.** File watching is off on
+  Linux (see above), so until the buffer reloads, the server still holds nvim's
+  copy. Diagnostics can point at lines that no longer exist. Reloading the
+  buffer sends `didChange` and fixes both at once.
+- **If you also have unsaved changes, nothing reloads silently.** You get
+  `W12: File "..." has changed and the buffer was changed in Vim as well` and
+  have to pick a side. That is by design; `:e!` takes the disk version and
+  discards yours.
 
 ## Which tool for which job
 
