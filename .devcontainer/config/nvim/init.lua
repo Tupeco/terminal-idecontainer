@@ -44,6 +44,62 @@ vim.g.clipboard = {
 }
 
 -- ---------------------------------------------------------------------------
+-- Make messages visible
+--
+-- Nvim does report things like "No locations found" (runtime/lua/vim/lsp/buf.lua)
+-- and "method ... is not supported by any server" — but as unhighlighted text in
+-- the message line, which is trivially missed. Routing vim.notify through
+-- nvim_echo colours it by level and still records it in :messages. Deliberately
+-- level-based rather than matching message text, so an nvim upgrade that rewords
+-- a message cannot silently switch this off.
+-- ---------------------------------------------------------------------------
+do
+  local orig_notify = vim.notify
+  local hl_for = {
+    [vim.log.levels.INFO] = "MoreMsg",
+    [vim.log.levels.WARN] = "WarningMsg",
+    [vim.log.levels.ERROR] = "ErrorMsg",
+  }
+  vim.notify = function(msg, level, opts)
+    level = level or vim.log.levels.INFO
+    local hl = hl_for[level]
+    if hl and type(msg) == "string" then
+      vim.api.nvim_echo({ { msg, hl } }, true, {})
+      return
+    end
+    return orig_notify(msg, level, opts)
+  end
+end
+
+-- ---------------------------------------------------------------------------
+-- Help in a floating window
+--
+-- Checks buftype rather than filetype: `:help` sets buftype=help itself, while
+-- filetype depends on detection being enabled. The `relative ~= ""` guard stops
+-- it re-floating a window that is already floating.
+-- ---------------------------------------------------------------------------
+vim.api.nvim_create_autocmd("BufWinEnter", {
+  group = vim.api.nvim_create_augroup("float_help", { clear = true }),
+  callback = function(ev)
+    if vim.bo[ev.buf].buftype ~= "help" then return end
+    local win = vim.fn.bufwinid(ev.buf)
+    if win == -1 or vim.api.nvim_win_get_config(win).relative ~= "" then return end
+    local w = math.min(120, math.floor(vim.o.columns * 0.85))
+    local h = math.floor(vim.o.lines * 0.85)
+    vim.api.nvim_win_set_config(win, {
+      relative = "editor",
+      width = w,
+      height = h,
+      row = math.floor((vim.o.lines - h) / 2),
+      col = math.floor((vim.o.columns - w) / 2),
+      border = "rounded",
+      title = " help ",
+      title_pos = "center",
+    })
+  end,
+})
+
+-- ---------------------------------------------------------------------------
 -- lazy.nvim bootstrap
 -- ---------------------------------------------------------------------------
 local lazypath = vim.fn.stdpath("data") .. "/lazy/lazy.nvim"
@@ -189,6 +245,12 @@ require("lazy").setup({
       vim.keymap.set("n", "<leader>fs", fzf.lsp_document_symbols, { desc = "Document symbols" })
       vim.keymap.set("n", "<leader>fS", fzf.lsp_live_workspace_symbols, { desc = "Workspace symbols" })
       vim.keymap.set("n", "<leader>fd", fzf.diagnostics_workspace, { desc = "Diagnostics" })
+      -- The "what was that key again" picker: every mapping, with its
+      -- description, searchable. This is the closest thing here to diffview's
+      -- g? help panel, except it covers the whole editor.
+      vim.keymap.set("n", "<leader>fk", fzf.keymaps, { desc = "Keymaps" })
+      vim.keymap.set("n", "<leader>fj", fzf.jumps, { desc = "Jumplist" })
+      vim.keymap.set("n", "<leader>fh", fzf.helptags, { desc = "Help tags" })
     end,
   },
 
@@ -362,9 +424,46 @@ vim.api.nvim_create_autocmd("LspAttach", {
     map("[d", function() vim.diagnostic.jump({ count = -1 }) end, "Previous diagnostic")
     map("]d", function() vim.diagnostic.jump({ count = 1 }) end, "Next diagnostic")
 
+    -- PyCharm's Call Hierarchy. Nvim 0.11+ already binds the rest of the LSP
+    -- verbs globally (grn rename, gra code action, grr references, gri
+    -- implementation, grt type definition, gO document symbols, insert-mode
+    -- CTRL-S signature help), but not these two.
+    map("<leader>ci", vim.lsp.buf.incoming_calls, "Incoming calls")
+    map("<leader>co", vim.lsp.buf.outgoing_calls, "Outgoing calls")
+
+    -- Ctrl-click to jump to a definition. The built-in <C-LeftMouse> is
+    -- jump-to-tag, which does nothing useful without a tags file. The leading
+    -- <LeftMouse> is required: it is what moves the cursor to what you clicked,
+    -- before the handler reads the position under it.
+    vim.keymap.set(
+      "n",
+      "<C-LeftMouse>",
+      "<LeftMouse><cmd>lua vim.lsp.buf.definition()<cr>",
+      { buffer = bufnr, desc = "LSP: Go to definition (ctrl-click)" }
+    )
+
     local client = vim.lsp.get_client_by_id(args.data.client_id)
     if client and client:supports_method("textDocument/inlayHint") then
       vim.lsp.inlay_hint.enable(true, { bufnr = bufnr })
+    end
+
+    -- Highlight the other occurrences of whatever is under the cursor. This is
+    -- the semantic version, not a word match: the server decides what counts as
+    -- the same symbol, so a local `x` does not light up an unrelated `x`. Fires
+    -- after `updatetime` (250ms). The LspReference* highlight groups it uses are
+    -- defined by Nvim itself, so this needs nothing from the colorscheme.
+    if client and client:supports_method("textDocument/documentHighlight") then
+      local hl_group = vim.api.nvim_create_augroup("lsp_doc_hl_" .. bufnr, { clear = true })
+      vim.api.nvim_create_autocmd({ "CursorHold", "CursorHoldI" }, {
+        group = hl_group,
+        buffer = bufnr,
+        callback = function() vim.lsp.buf.document_highlight() end,
+      })
+      vim.api.nvim_create_autocmd({ "CursorMoved", "CursorMovedI" }, {
+        group = hl_group,
+        buffer = bufnr,
+        callback = function() vim.lsp.buf.clear_references() end,
+      })
     end
   end,
 })

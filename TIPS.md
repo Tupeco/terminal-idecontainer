@@ -281,14 +281,9 @@ The rest of the IDE reflexes map onto what was already here:
 
 ### If the tree renders as boxes
 
-The folder glyphs are Nerd Font characters, and `nvim-web-devicons` adds more
-of them for individual filetypes. If your terminal font has no glyphs you will
-get tofu boxes. Either point the terminal at a Nerd Font, or drop the
-`nvim-tree/nvim-web-devicons` dependency and set plain-text icons under
-`default_component_configs.icon` in the neo-tree spec.
-
-Note this is not specific to neo-tree — diffview's default config uses the same
-kind of glyph for its folder icons, so if one looks wrong the other already did.
+Your terminal font has no Nerd Font glyphs. This is not specific to neo-tree —
+diffview's defaults use the same characters, so if one looks wrong the other
+already did. See [Glyphs showing as boxes](#glyphs-showing-as-boxes).
 
 ### netrw is still there
 
@@ -303,6 +298,212 @@ wrong, both verified against the netrw shipped with 0.12:
 - `g:netrw_liststyle = 3` is what turns the listing into a tree;
   `g:netrw_browse_split = 4` makes `<cr>` open the file in the previous window
   rather than replacing the explorer.
+
+## Terminal setup (iTerm2)
+
+### Glyphs showing as boxes
+
+The icons are Nerd Font characters. The font has to be installed **on the Mac**,
+not in the container — iTerm2 is what draws them, and it only knows about fonts
+on the host.
+
+```sh
+brew install --cask font-jetbrains-mono-nerd-font
+```
+
+No separate tap; the font casks moved into the main Homebrew cask repo. Then
+iTerm2 → Settings → Profiles → Text → Font, and pick **JetBrainsMono Nerd
+Font**. Restart the pane or reattach tmux.
+
+If you would rather keep your current font for code, iTerm2 can use a second
+font just for the glyphs: same panel, tick **Use a different font for
+non-ASCII text** and set the non-ASCII font to the Nerd Font. Per iTerm2's
+docs that font is used "for all code points greater than or equal to 128",
+which is exactly where the glyphs live.
+
+The alternative is to use no glyphs at all: drop `nvim-tree/nvim-web-devicons`
+from the neo-tree spec and set plain-text icons under
+`default_component_configs.icon`, and override diffview's `icons` and `signs`
+tables the same way. That is more config to carry than installing a font.
+
+### Mouse support
+
+It works through the whole stack — iTerm2 → container → tmux → nvim →
+neo-tree — and both halves are already switched on: `mouse = "a"` in
+`init.lua` and `set -g mouse on` in `tmux.conf`.
+
+| Action | Works |
+|---|---|
+| Click a split to focus it | yes, nvim and tmux both |
+| Drag a split separator to resize | yes |
+| Drag a tmux pane border to resize | yes — tmux keeps events on its own borders |
+| Scroll wheel in a buffer | yes |
+| Double-click a file in neo-tree | yes, `<2-LeftMouse>` is bound to `open` |
+| Ctrl-click to jump to a definition | yes, now mapped (see below) |
+
+The layering question resolves itself: tmux forwards mouse events to whichever
+application has asked for mouse reporting, so nvim gets them. Events on tmux's
+own chrome — pane borders, status line — stay with tmux. Adding tmux panes
+alongside nvim splits does not create a conflict.
+
+**The one thing that changes.** With mouse reporting on, dragging selects text
+*inside nvim* rather than making an iTerm2 selection, so Cmd-C no longer copies
+what you dragged. Two ways out:
+
+- Hold **Option** while dragging. Per iTerm2's docs: "Alt/Option: Mouse
+  reporting will be disabled. If you're using vim and you can't make a
+  selection, try holding down the alt key." That gives you the terminal's own
+  selection back.
+- Or just select in nvim and press `y`. OSC 52 is configured in all three of
+  helix, nvim and tmux, so the yank reaches the Mac clipboard anyway. This is
+  usually the better path — it survives split boundaries and does not pick up
+  line numbers or the tree.
+
+### Code navigation
+
+Nvim 0.11+ binds most of the LSP verbs globally, before any config:
+
+| Key | Does |
+|---|---|
+| `grr` | References |
+| `gri` | Implementation |
+| `grt` | Type definition |
+| `grn` | Rename |
+| `gra` | Code action |
+| `gO` | Document symbols |
+| `<C-s>` (insert) | Signature help |
+
+This config adds the more vim-flavoured aliases on top: `gd` definition, `gD`
+declaration, `gr` references, `gi` implementation, `K` hover, `<leader>rn`
+rename, `<leader>ca` code action, `[d`/`]d` diagnostics.
+
+Plus two that nvim does not bind and PyCharm users miss:
+
+| Key | Does |
+|---|---|
+| `<leader>ci` | Incoming calls (Call Hierarchy) |
+| `<leader>co` | Outgoing calls |
+| `<C-LeftMouse>` | Ctrl-click to jump to definition |
+| `<leader>fk` | Search every keymap (the "what was that key" picker) |
+| `<leader>fj` | Jumplist picker |
+| `<leader>fh` | Help tag search |
+
+### Finding a key you half-remember
+
+`<leader>fk` opens every mapping in the editor, with its description, in an
+fzf picker. It is the general-purpose equivalent of diffview's `g?`, and it is
+not limited to one plugin. `<leader>fh` searches the help tags the same way.
+
+Diffview's `g?` is still the better view *inside* diffview, because it shows
+only what is bound in that context. `<leader>fk` shows everything, which is
+what you want when you cannot remember which plugin a key belonged to.
+
+### Backtracking after a jump
+
+| Key | Does |
+|---|---|
+| `<C-o>` | Back to where you jumped from |
+| `<C-i>` | Forward again |
+| `<C-t>` | Back up the tag stack (LSP jumps push onto it too) |
+| `g;` / `g,` | Older / newer *edit* position, ignoring pure navigation |
+| `` `` `` | The position before the latest jump |
+| `<leader>fj` | The whole jumplist in a picker, to jump several steps back at once |
+
+`<C-o>` is the one to internalise — it is PyCharm's Navigate Back, it is native
+vim, needs no LSP, and works across files.
+
+Two things that catch people out: the jumplist is **per window**, so splitting
+and jumping in the new window starts a fresh history; and only *jumps* are
+recorded, not every cursor move — `j` and `k` do not add entries, which is what
+makes it useful. `:jumps` prints the raw list.
+
+**Also worth knowing:** `<leader>fs` and `<leader>fS` cover symbol search in the
+current file and across the workspace.
+
+### When a jump does nothing
+
+`gri` (or `gd`, `grr`, …) landing you nowhere has two quite different causes,
+and Nvim distinguishes them — it just says so quietly:
+
+- **"No locations found"** — the server was asked and had no answer.
+- **"method ... is not supported by any server activated for this buffer"** —
+  the server does not implement that request at all.
+
+The second is the likely one for `gri` in Python. "Go to implementation" assumes
+an interface/implementation split that Python does not really have, so
+basedpyright may not advertise the capability. Check it directly:
+
+```vim
+:lua =vim.lsp.get_clients({ bufnr = 0 })[1].server_capabilities.implementationProvider
+```
+
+`nil` or `false` means `gri` will never do anything in that buffer, and `grr`
+(references) is what you actually want. rust-analyzer does implement it.
+
+Both messages were easy to miss because Nvim prints them unhighlighted in the
+message line. `init.lua` now routes `vim.notify` through `nvim_echo` so they are
+coloured by level — blue for info, yellow for warnings, red for errors — and
+still land in `:messages`. That is done by level rather than by matching the
+message text, so a future Nvim that rewords a message cannot quietly turn it off.
+
+### Highlighting other occurrences of a symbol
+
+Automatic: rest the cursor on a symbol for `updatetime` (250ms) and the other
+occurrences light up, cleared as soon as you move. This is the *semantic*
+version rather than a word match — the language server decides what counts as
+the same symbol, so a local `x` will not light up an unrelated `x` in another
+scope.
+
+It only runs for servers advertising `textDocument/documentHighlight`, which
+basedpyright and rust-analyzer both do. The `LspReference*` highlight groups
+are defined by Nvim itself, so this needs nothing from the colorscheme.
+
+For a plain textual match, and in buffers with no LSP, `*` and `#` still search
+forward and backward for the word under the cursor, and `:set hlsearch` keeps
+every match lit until `<Esc>`.
+
+### Floating windows
+
+`:help` now opens in a centred float rather than a split, so it stops rearranging
+your layout. `q` closes it as usual.
+
+The autocmd behind it is worth knowing if you want to float something else: it
+keys off `buftype == "help"`, not `filetype`. `:help` sets `buftype` itself,
+whereas `filetype` depends on detection being enabled — which is exactly the
+kind of thing that breaks under `-u` or a minimal config. Any window can be
+converted the same way with `nvim_win_set_config(win, { relative = "editor", ... })`.
+
+You already had floats without noticing: `K` (LSP hover) and the diagnostic
+popups are both floating windows.
+
+## Splits
+
+New splits go inside the current window by default, which is why a fourth
+`:split` in a three-way layout carves up one column instead of spanning the
+screen. The fix is native — no plugin:
+
+```vim
+:botright split     " full-width, at the bottom of everything
+:topleft split      " full-width, at the top
+:botright vsplit    " full-height, far right
+:topleft vsplit     " full-height, far left
+```
+
+`aboveleft` and `belowright` are the relative counterparts, and are what plain
+`:split` and `:vsplit` effectively do.
+
+Verified by reading `winlayout()` on nvim 0.12 with three side-by-side windows:
+
+```
+3 vsplits:             row[ leaf, leaf, leaf ]
+after :split           row[ col[ leaf, leaf ], leaf, leaf ]   <- nested
+after :botright split  col[ row[ leaf, leaf, leaf ], leaf ]   <- root level
+```
+
+You do **not** need WinShift.nvim for this. That plugin solves the adjacent
+problem — moving an existing window somewhere else in the layout — rather than
+choosing where a new one lands. Worth noting it is by the same author as the
+original diffview.nvim, so check its commit activity before adopting it.
 
 ## Side-by-side diffs in the shell
 
