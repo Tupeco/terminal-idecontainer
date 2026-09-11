@@ -31,6 +31,7 @@ template](#using-this-as-a-template).
     bashrc.extra            PATH, history persistence, `work` helper
 mount/                  bind-mounted at /mount inside; gitignored
 dev                     lifecycle wrapper script
+TIPS.md                 how to drive the tools once you are inside
 ```
 
 Run `./dev` with no arguments for the full command list.
@@ -145,7 +146,7 @@ workspace volume is untouched by container restarts.
 | Ubuntu 26.04 LTS | Base image: LLVM 21, GCC 15, system Python 3.14 |
 | Helix 25.07.1 (`hx`) | Batteries-included editor, zero config needed |
 | evil-helix (`ehx`) | Helix with Vim keybindings compiled in |
-| Neovim (upstream stable, `nvim`) | When you need the debugger or plugins |
+| Neovim (upstream stable, `nvim`) | When you need the debugger, a project tree, or plugins |
 | rustup + rust-analyzer, clippy, rustfmt | Rust |
 | uv + Python 3.12 | Python interpreter and package management |
 | basedpyright, ruff | Python LSP, lint, format |
@@ -173,7 +174,9 @@ at runtime, which is a useful A/B when a binding surprises you.
 
 **`nvim`** is here for debugging, which is the one area where Helix is still
 explicitly experimental upstream and not a real replacement for what PyCharm
-gave you. Reach for `nvim` when you need breakpoints.
+gave you. Reach for `nvim` when you need breakpoints, a whole-repo diff, or the
+project tree: `nvim .` in a repo opens a file tree beside an editor window. See
+[TIPS.md](TIPS.md).
 
 `hx` and `ehx` are separate builds under separate prefixes, wrapped so each
 gets its own `HELIX_RUNTIME` and its own `config.toml`. They deliberately
@@ -234,6 +237,9 @@ git -c delta.side-by-side=false diff main..feature
 
 All of the delta settings live in `/etc/gitconfig` rather than your global
 config, so `git config --global` still overrides any of them.
+
+[TIPS.md](TIPS.md) has the rest: the full keymap tables, how to expand the
+folded-away unchanged lines, and why `g?` sometimes appears to stop working.
 
 ## Volumes
 

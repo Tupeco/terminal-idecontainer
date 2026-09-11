@@ -20,7 +20,12 @@ o.ignorecase = true
 o.smartcase = true
 o.undofile = true
 o.updatetime = 250
-o.timeoutlen = 400
+-- Nvim's own default. This was 400, a value which-key-style configs often
+-- suggest, but it is too tight for any mapping whose first key is also a
+-- built-in prefix. Pause longer than this between `<C-w>` and `<C-f>` and the
+-- mapping is abandoned mid-sequence, leaving you with built-in CTRL-W CTRL-F
+-- ("edit the file name under the cursor") instead of diffview's. See TIPS.md.
+o.timeoutlen = 1000
 o.splitright = true
 o.splitbelow = true
 o.scrolloff = 8
@@ -242,6 +247,53 @@ require("lazy").setup({
         format_on_save = { timeout_ms = 2000, lsp_format = "fallback" },
       })
     end,
+  },
+
+  -- Project tree in a side split: the closest thing here to PyCharm's Project
+  -- pane. Vetted before adding, given how the diffview situation turned out:
+  -- v3.42.0 shipped 2026-09-01, commits are landing weekly, and v3.x is the
+  -- branch upstream tells you to pin.
+  --
+  -- `lazy = false` is required rather than cosmetic: neo-tree has to be loaded
+  -- at startup to take over directory arguments, which is what makes `nvim .`
+  -- open the tree instead of netrw.
+  {
+    "nvim-neo-tree/neo-tree.nvim",
+    branch = "v3.x",
+    dependencies = {
+      "nvim-lua/plenary.nvim",
+      "MunifTanjim/nui.nvim",
+      -- Optional. Supplies per-filetype file icons; the folder glyphs come from
+      -- neo-tree's own defaults either way, so both want a Nerd Font in the
+      -- terminal. If yours has none, drop this line and set plain-text icons
+      -- via `default_component_configs.icon`.
+      "nvim-tree/nvim-web-devicons",
+    },
+    lazy = false,
+    keys = {
+      { "<leader>tt", "<cmd>Neotree toggle<cr>",                    desc = "Tree: toggle" },
+      { "<leader>tf", "<cmd>Neotree reveal<cr>",                    desc = "Tree: reveal current file" },
+      { "<leader>tg", "<cmd>Neotree float git_status<cr>",          desc = "Tree: git status" },
+      { "<leader>tb", "<cmd>Neotree toggle show buffers right<cr>", desc = "Tree: buffers" },
+    },
+    opts = {
+      -- Never leave a lone tree window holding the tab open.
+      close_if_last_window = true,
+      filesystem = {
+        -- PyCharm's "Select Opened File", but automatic.
+        follow_current_file = { enabled = true },
+        -- Take over `nvim <dir>`. "open_default" puts the tree in the sidebar
+        -- and leaves an empty editor window beside it; "open_current" would
+        -- fill the whole window instead, which is just netrw again.
+        hijack_netrw_behavior = "open_default",
+        use_libuv_file_watcher = true,
+        filtered_items = {
+          hide_dotfiles = false,
+          hide_gitignored = true,
+        },
+      },
+      window = { width = 32 },
+    },
   },
 
   { "nvim-lualine/lualine.nvim", config = function()
