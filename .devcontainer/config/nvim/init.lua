@@ -100,6 +100,12 @@ vim.api.nvim_create_autocmd("BufWinEnter", {
 })
 
 -- ---------------------------------------------------------------------------
+-- Quick reference: `:Tips`, plus a greeting on an otherwise empty start.
+-- Rendered from the bind-mounted TIPS.md; see lua/devtips.lua.
+-- ---------------------------------------------------------------------------
+require("devtips").setup()
+
+-- ---------------------------------------------------------------------------
 -- lazy.nvim bootstrap
 -- ---------------------------------------------------------------------------
 local lazypath = vim.fn.stdpath("data") .. "/lazy/lazy.nvim"

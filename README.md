@@ -25,13 +25,15 @@ template](#using-this-as-a-template).
     helix/config.toml       Helix editor settings
     helix/languages.toml    LSP + DAP for Python and Rust, shared with ehx
     evil-helix/config.toml  evil-helix settings; read only by `ehx`
-    nvim/init.lua           self-contained Neovim config
+    nvim/init.lua           Neovim config
+    nvim/lua/devtips.lua    renders TIPS.md as `:Tips` and the startup screen
     bin/hx, bin/ehx         wrappers that pin each editor to its own runtime
     tmux.conf               OSC 52 passthrough, sane defaults
     bashrc.extra            PATH, history persistence, `work` helper
 mount/                  bind-mounted at /mount inside; gitignored
 dev                     lifecycle wrapper script
-TIPS.md                 how to drive the tools once you are inside
+TIPS.md                 how to drive the tools once you are inside; also
+                        bind-mounted, and rendered in-editor by `:Tips`
 ```
 
 Run `./dev` with no arguments for the full command list.

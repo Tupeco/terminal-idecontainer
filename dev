@@ -188,6 +188,12 @@ case "${1:-}" in
     # Docker would create this as root if it were missing, leaving you a
     # directory inside the container you cannot write to.
     mkdir -p "$MOUNT_DIR"
+    # docker-compose bind-mounts this file; if it is absent Docker creates a
+    # directory in its place and the in-editor quick reference goes blank.
+    if [ ! -f "$ROOT/TIPS.md" ]; then
+      printf '# Tips\n\n## Quick reference\n\n| | |\n|---|---|\n| `:Tips` | This file |\n' > "$ROOT/TIPS.md"
+      echo "note: created a stub TIPS.md (it is bind-mounted into the container)"
+    fi
     cd "$DCDIR"
     "${COMPOSE[@]}" up -d --build
     echo "Container running. Attach with: ./dev attach"

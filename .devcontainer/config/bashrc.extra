@@ -68,4 +68,5 @@ work() {
 
 if [ -n "$PS1" ] && [ -z "$TMUX" ]; then
   echo "Polyglot dev container. Run 'work' to attach to the persistent tmux session."
+  echo "In a repo, 'nvim .' opens the file tree beside an editor; :Tips for the keys."
 fi

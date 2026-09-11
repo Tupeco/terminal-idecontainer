@@ -68,6 +68,13 @@ services:
       # in the workspace volume above, where virtiofs is not in the way.
       - ../mount:/mount
 
+      # TIPS.md, read-only. `:Tips` and the startup quick reference render
+      # straight from this file, so editing it on the host updates the editor
+      # immediately rather than at the next rebuild. `./dev up` creates a stub
+      # if it is missing, because Docker would otherwise helpfully make a
+      # directory here and the greeting would silently go blank.
+      - ../TIPS.md:/home/dev/.config/nvim/TIPS.md:ro
+
       # Anything added by `./dev mount <host-path> <name>` lands between these
       # two markers, as /other-mounts/<name>. The markers are how the script
       # finds its own entries, so leave them in place; the lines between them
