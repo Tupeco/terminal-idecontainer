@@ -32,6 +32,44 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # ---------------------------------------------------------------------------
 # Base system packages
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Un-minimize
+#
+# The Ubuntu base image ships "minimized" in two ways that both have to be
+# undone, and neither is fixed by installing man-db:
+#
+#   1. /etc/dpkg/dpkg.cfg.d/excludes tells dpkg never to unpack anything under
+#      /usr/share/man (or /usr/share/doc). Packages record the paths but the
+#      files are simply not there, so `man git` finds nothing.
+#   2. A dpkg-divert points /usr/bin/man at /usr/bin/man.REAL and leaves a stub
+#      shell script in its place that prints "This system has been minimized".
+#      Installing man-db writes the real binary to the *diverted* path, so the
+#      stub keeps winning. This is the part that makes it look like man-db is
+#      installed and broken.
+#
+# Both must go before the install below, so everything added afterwards keeps
+# its documentation. The diversion dance is lifted verbatim from Ubuntu's own
+# `unminimize` script.
+#
+# Base-image packages installed their man pages before the exclusion was lifted,
+# so they need a reinstall for `man bash` and `man ls` to work. That list is
+# short in a base image — under two dozen packages — because there is barely
+# anything in it yet. Doing this here rather than later keeps it that way.
+# ---------------------------------------------------------------------------
+RUN set -eux; \
+    rm -f /etc/dpkg/dpkg.cfg.d/excludes; \
+    if [ "$(dpkg-divert --truename /usr/bin/man)" = "/usr/bin/man.REAL" ]; then \
+        rm -f /usr/bin/man; \
+        dpkg-divert --quiet --remove --rename /usr/bin/man; \
+    fi; \
+    apt-get update; \
+    pkgs="$(dpkg -S /usr/share/man/ 2>/dev/null \
+            | sed 's/,//g; s/:.*//' | tr ' ' '\n' | sort -u | grep -v '^$' | tr '\n' ' ')"; \
+    if [ -n "$pkgs" ]; then \
+        apt-get install -y --reinstall --no-install-recommends $pkgs; \
+    fi; \
+    rm -rf /var/lib/apt/lists/*
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential pkg-config libssl-dev \
         ca-certificates curl wget gnupg \
@@ -40,7 +78,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         unzip zip xz-utils \
         lldb iproute2 \
         python3 python3-venv \
-        sudo locales man-db procps \
+        sudo locales procps \
+        man-db manpages manpages-dev \
+        bash-completion \
         bat du-dust duf eza moor \
     && ln -sf /usr/bin/fdfind /usr/local/bin/fd \
     && rm -rf /var/lib/apt/lists/*

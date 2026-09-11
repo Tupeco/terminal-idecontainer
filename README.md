@@ -156,6 +156,7 @@ workspace volume is untouched by container restarts.
 | Claude Code | Native binary, no Node.js dependency |
 | delta | Side-by-side `git diff`, `n`/`N` between files |
 | tmux, ripgrep, fd, fzf, jq, git-lfs | Supporting tools |
+| man-db, manpages, bash-completion | Working `man` and tab completion; see TIPS.md |
 | Node.js 22 | Only for npx-based MCP servers |
 
 ## Choosing between the three editors

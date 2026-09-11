@@ -790,6 +790,76 @@ Two consequences that are easy to misread:
   leaves your version in the buffer and prompts rather than clobbering it.
   `:e!` takes the disk version and discards yours.
 
+## Man pages and shell completion
+
+Both were broken in the image until this was fixed, and both for reasons that
+are invisible from inside the container.
+
+### Why `man` looked installed but did nothing
+
+The Ubuntu base image ships "minimized" in two independent ways:
+
+1. **`/etc/dpkg/dpkg.cfg.d/excludes`** tells dpkg never to unpack anything under
+   `/usr/share/man`. The package still *records* those paths — `dpkg -L coreutils`
+   happily lists `/usr/share/man/man1/arch.1.gz` — but the file was never
+   written. So the file list lies, and `man ls` finds nothing.
+2. **A `dpkg-divert` on `/usr/bin/man`** points the real binary at
+   `/usr/bin/man.REAL` and leaves a shell-script stub in its place that prints
+   *"This system has been minimized by removing packages and content…"*.
+
+The second one is what makes this so confusing to debug: the Dockerfile had
+`man-db` in its package list all along, and installing it does not help.
+Because of the diversion, dpkg writes the real binary to `man.REAL` and the stub
+keeps winning. `file /usr/bin/man` reporting a shell script rather than an ELF
+binary is the tell.
+
+The Dockerfile now undoes both *before* installing anything, so every package
+added afterwards keeps its documentation, and reinstalls the handful of
+base-image packages whose pages were skipped earlier. The diversion incantation
+is lifted from Ubuntu's own `unminimize` script:
+
+```sh
+if [ "$(dpkg-divert --truename /usr/bin/man)" = "/usr/bin/man.REAL" ]; then
+    rm -f /usr/bin/man
+    dpkg-divert --quiet --remove --rename /usr/bin/man
+fi
+```
+
+One more trap worth knowing if you add packages later: on Debian and Ubuntu a
+program's man pages are often a **separate package**. Git's live in `git-man`.
+That one is a `Depends`, so it survives `--no-install-recommends` — but plenty
+of `-doc` packages are only `Recommends` and will be silently skipped by the
+`--no-install-recommends` this image uses.
+
+### Why git completion did nothing
+
+`bash-completion` was not installed. Git ships its own completion script to
+`/usr/share/bash-completion/completions/git` regardless — that file was present
+the whole time — but nothing loads it. The loader,
+`/usr/share/bash-completion/bash_completion`, comes from the `bash-completion`
+package, and Ubuntu's stock `~/.bashrc` sources it only `if [ -f ... ]`.
+
+So the file existed, the sourcing logic existed, and the one piece joining them
+did not. Installing the package is the whole fix; completions load on demand
+after that:
+
+```
+$ complete -p git
+complete -o bashdefault -o default -o nospace -F __git_wrap__git_main git
+```
+
+This fixes completion for everything else in the image too — `docker`, `ssh`,
+`systemctl` and the rest all ship completion files that were equally inert.
+
+### The cost
+
+Restoring documentation makes the image bigger — man pages and `/usr/share/doc`
+for every installed package, plus `manpages` and `manpages-dev` for the base
+system and the C library. If you ever need that space back, dropping
+`manpages-dev` is the biggest single saving and only costs you section 2 and 3
+pages (syscalls and libc), which matter for C and Rust work but nothing else
+here.
+
 ## Which tool for which job
 
 | Want | Use |
