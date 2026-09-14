@@ -1040,6 +1040,19 @@ most prose — was fine.
 `main`'s markdown injection query is byte-identical to the one Neovim ships,
 and the custom directive is gone from that branch entirely.
 
+Two things the migration itself needed:
+
+- **`tree-sitter-cli`**, because `main` shells out to `tree-sitter` to build each
+  parser. The Dockerfile takes the pinned prebuilt release binary rather than
+  `cargo install tree-sitter-cli` — that route pulls in `rquickjs-sys`, whose
+  build script runs bindgen and needs libclang, which this image has no reason
+  to carry. Upstream's "not npm" warning is about the npm wrapper; the release
+  binary is what the distro packages ship.
+- **A check that the parsers actually landed.** `install():wait()` returns
+  success even when every download failed, so the build verifies the `.so` files
+  exist and warns loudly if fewer than expected. Without that, one network blip
+  bakes an image whose editor silently has no highlighting.
+
 The general lesson: a plugin pinned to an old branch does not just stop gaining
 features, it starts shadowing core files with versions written for a different
 Neovim. When a traceback points only at `$VIMRUNTIME`, check what is overriding

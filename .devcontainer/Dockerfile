@@ -170,12 +170,29 @@ RUN set -eux; \
     rustc --version; \
     rust-analyzer --version
 
-# tree-sitter-cli, required by nvim-treesitter's `main` branch to build parsers.
-# Upstream is explicit that it must come from a package manager and **not** npm.
-# Cargo is the one already in this image, and the crate is the same tool.
-ARG TREE_SITTER_CLI_VERSION=0.26.1
+# tree-sitter-cli, required by nvim-treesitter's `main` branch, which shells out
+# to `tree-sitter` to build each parser.
+#
+# This takes the official prebuilt release binary rather than `cargo install`.
+# Building the crate pulls in rquickjs-sys, whose build script runs bindgen and
+# therefore needs libclang, which this image does not carry — the build fails
+# with "Unable to find libclang". Adding libclang-dev would fix it and cost a
+# multi-minute compile and a large dependency for a single 8 MB tool.
+#
+# Upstream's warning is against the *npm* wrapper specifically. This is the same
+# binary the distro packages ship, pinned, which is what that advice wants.
+ARG TREE_SITTER_VERSION=0.26.13
 RUN set -eux; \
-    cargo install tree-sitter-cli --version "^${TREE_SITTER_CLI_VERSION}" --locked; \
+    case "$(dpkg --print-architecture)" in \
+        amd64) tsarch=x64 ;; \
+        arm64) tsarch=arm64 ;; \
+        *) echo "unsupported architecture" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL -o /tmp/tree-sitter.gz \
+        "https://github.com/tree-sitter/tree-sitter/releases/download/v${TREE_SITTER_VERSION}/tree-sitter-linux-${tsarch}.gz"; \
+    gunzip -c /tmp/tree-sitter.gz > /usr/local/bin/tree-sitter; \
+    chmod 0755 /usr/local/bin/tree-sitter; \
+    rm /tmp/tree-sitter.gz; \
     tree-sitter --version
 
 # ---------------------------------------------------------------------------
@@ -314,7 +331,20 @@ RUN nvim --headless "+Lazy! sync" +qa 2>&1 | tail -n 30 \
     && nvim --headless \
         "+lua require('nvim-treesitter').install({ 'python', 'rust', 'lua', 'toml', 'json', 'yaml', 'markdown', 'markdown_inline', 'bash', 'regex', 'vim', 'vimdoc' }):wait(300000)" \
         +qa 2>&1 | tail -n 30 \
-    || echo "NOTE: some parsers failed to build; run :TSUpdate in the container"
+    || echo "NOTE: the parser install step exited non-zero"
+
+# Verify, because `install():wait()` returns success even when every download
+# failed — a network blip would otherwise bake an image whose editor silently
+# has no highlighting. Warn rather than fail: the container is still usable, the
+# `pcall` guard in init.lua keeps it quiet, and `:TSUpdate` fixes it in place.
+RUN set -eux; \
+    dir="/home/${USERNAME}/.local/share/nvim/site/parser"; \
+    count="$(find "$dir" -name '*.so' 2>/dev/null | wc -l)"; \
+    echo "treesitter parsers installed: $count"; \
+    if [ "$count" -lt 12 ]; then \
+        echo "WARNING: expected 12 parsers. Run :TSUpdate inside the container."; \
+        find "$dir" -name '*.so' -printf '  %f\n' 2>/dev/null || true; \
+    fi
 
 # Claude Code. The native installer needs no Node.js and drops a self-contained
 # binary in ~/.local/bin. Tokens and history land in ~/.claude, which is a
