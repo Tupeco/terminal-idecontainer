@@ -992,6 +992,60 @@ Your terminal font has no Nerd Font glyphs. This is not specific to neo-tree —
 diffview's defaults use the same characters, so if one looks wrong the other
 already did. See [Glyphs showing as boxes](#glyphs-showing-as-boxes).
 
+### "attempt to call method 'range' (a nil value)" on markdown
+
+Fixed by moving nvim-treesitter from `master` to `main`. Recorded here because
+the diagnosis is not guessable from the traceback.
+
+The symptom was an error like this, thrown on the first view of a markdown
+buffer and not again:
+
+```
+languagetree.lua:215: treesitter.lua:197: attempt to call method 'range' (a nil value)
+```
+
+`treesitter.lua:197` is `return { node:range(true) }` inside `get_range()`, so
+something handed it a nil node while resolving a language injection.
+
+The cause was the pinned branch. nvim-treesitter `master` supports Neovim 0.10
+and 0.11 and says so outright — "Neovim 0.12 is **not supported**" — while the
+image tracks upstream stable, now 0.12. Plugin runtimepath entries beat
+`$VIMRUNTIME`, so master's `queries/markdown/injections.scm` shadowed the one
+Neovim ships, and the two differ in exactly one line:
+
+```scheme
+;; Neovim 0.12 bundled              ;; nvim-treesitter master
+(language) @injection.language      (language) @_lang
+                                    (#set-lang-from-info-string! @_lang)
+```
+
+`#set-lang-from-info-string!` is a custom directive registered only by
+nvim-treesitter's own Lua. Under 0.12's injection handling it left the content
+node unresolved.
+
+Narrowed down by elimination — the crash needs *both* halves:
+
+| queries on runtimepath | fenced code block | result |
+|---|---|---|
+| master | yes | crash |
+| Neovim's bundled | yes | clean |
+| master | no | clean |
+| `main` | yes | clean |
+
+That "fenced code block" requirement is why it looked sporadic. `:Tips` opens a
+file full of them, and **LSP hover floats are markdown containing fenced code
+blocks**, so `K` on a documented symbol hit it too. Anything without fences —
+most prose — was fine.
+
+`main`'s markdown injection query is byte-identical to the one Neovim ships,
+and the custom directive is gone from that branch entirely.
+
+The general lesson: a plugin pinned to an old branch does not just stop gaining
+features, it starts shadowing core files with versions written for a different
+Neovim. When a traceback points only at `$VIMRUNTIME`, check what is overriding
+it — `:checkhealth vim.treesitter` and `:lua =vim.treesitter.query.get('markdown','injections')`
+show which file actually won.
+
 ### The file tree stole my full-width bottom window
 
 Toggling the tree off and on re-wraps the layout around it, because a sidebar

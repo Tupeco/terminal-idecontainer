@@ -367,9 +367,19 @@ bind mount for the config directory in `docker-compose.yml`:
   `ls | head` in the lldb-dap probe now run through uutils implementations.
   They are meant to be drop-in, but this has not been through a full build yet,
   so if a step fails in a way that makes no sense, suspect that first.
-- **`nvim-treesitter` is pinned to `master`.** Its `main` branch rewrite drops
-  the `configs.setup()` API and `:TSUpdateSync` used by this config and by the
-  image build. Unpin only alongside a config rewrite.
+- **`nvim-treesitter` is on `main`, not `master`.** This used to be pinned to
+  `master` to keep the `configs.setup()` API and `:TSUpdateSync`. That pin
+  became a bug: master's README states "Neovim 0.10 or 0.11 (Neovim 0.12 is
+  **not supported**)", and on 0.12 its markdown injection query crashes the
+  parser on any fenced code block — which includes every LSP hover float. The
+  config now uses `main`'s `setup()`/`install()` and core Neovim's
+  `vim.treesitter.start()`. See TIPS.md for the full diagnosis.
+- **`incremental_selection` is gone** with the move to `main`. Neovim 0.12's own
+  `an` and `in` text objects do the same job — see
+  `:help treesitter-incremental-selection`.
+- **Treesitter parsers need `tree-sitter-cli`,** which `main` requires and which
+  the image builds with `cargo install`. Upstream is explicit that it must not
+  come from npm.
 - **debugpy lives in `/opt/debugpy`,** not your project venv. If your debugged
   code needs project dependencies visible to the adapter, run
   `uv pip install debugpy` inside the project venv and point

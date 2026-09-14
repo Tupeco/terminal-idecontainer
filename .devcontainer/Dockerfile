@@ -170,6 +170,14 @@ RUN set -eux; \
     rustc --version; \
     rust-analyzer --version
 
+# tree-sitter-cli, required by nvim-treesitter's `main` branch to build parsers.
+# Upstream is explicit that it must come from a package manager and **not** npm.
+# Cargo is the one already in this image, and the crate is the same tool.
+ARG TREE_SITTER_CLI_VERSION=0.26.1
+RUN set -eux; \
+    cargo install tree-sitter-cli --version "^${TREE_SITTER_CLI_VERSION}" --locked; \
+    tree-sitter --version
+
 # ---------------------------------------------------------------------------
 # Python via uv
 # ---------------------------------------------------------------------------
@@ -298,8 +306,14 @@ RUN set -eux; \
 
 # Bake plugins and treesitter parsers into the image so first launch is instant
 # and works with no network.
+#
+# nvim-treesitter's `main` branch has no :TSUpdateSync — installation is async,
+# and `:wait()` on the returned handle is the documented way to block in a
+# script context like this one. Five minutes is upstream's own suggested cap.
 RUN nvim --headless "+Lazy! sync" +qa 2>&1 | tail -n 30 \
-    && nvim --headless "+TSUpdateSync" +qa 2>&1 | tail -n 30 \
+    && nvim --headless \
+        "+lua require('nvim-treesitter').install({ 'python', 'rust', 'lua', 'toml', 'json', 'yaml', 'markdown', 'markdown_inline', 'bash', 'regex', 'vim', 'vimdoc' }):wait(300000)" \
+        +qa 2>&1 | tail -n 30 \
     || echo "NOTE: some parsers failed to build; run :TSUpdate in the container"
 
 # Claude Code. The native installer needs no Node.js and drops a self-contained

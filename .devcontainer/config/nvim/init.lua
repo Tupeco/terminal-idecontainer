@@ -168,21 +168,53 @@ require("lazy").setup({
       vim.cmd.colorscheme("tokyonight-night")
     end },
 
-  -- Pinned to master: the main branch rewrite drops the classic setup API and
-  -- :TSUpdateSync, which this config and the image build step rely on.
+  -- The `main` branch, not `master`.
+  --
+  -- master is pinned to Neovim 0.10/0.11 and says so in its own README: "Neovim
+  -- 0.12 is not supported". Running it on 0.12 breaks markdown in particular,
+  -- because master's queries/markdown/injections.scm uses a custom directive,
+  -- `#set-lang-from-info-string!`, that only its own Lua registers. Plugin
+  -- runtimepath entries beat $VIMRUNTIME, so that query shadows the one Nvim
+  -- ships, and any markdown buffer containing a fenced code block throws
+  -- "attempt to call method 'range' (a nil value)" during injection parsing.
+  -- LSP hover floats are markdown with fenced code blocks, so this is not
+  -- limited to reading documentation.
+  --
+  -- main drops the old `configs.setup()` API entirely: it installs parsers and
+  -- queries, and everything else is core Neovim. Highlighting is
+  -- `vim.treesitter.start()`, folding is `vim.treesitter.foldexpr()`, injections
+  -- need no setup at all. `incremental_selection` is gone with no replacement;
+  -- Nvim's own `v_an`/`v_in` text objects cover much of it.
   {
     "nvim-treesitter/nvim-treesitter",
-    branch = "master",
+    branch = "main",
     build = ":TSUpdate",
+    lazy = false,
     config = function()
-      require("nvim-treesitter.configs").setup({
-        ensure_installed = {
-          "python", "rust", "lua", "toml", "json", "yaml",
-          "markdown", "markdown_inline", "bash", "regex", "vim", "vimdoc",
-        },
-        highlight = { enable = true },
-        indent = { enable = true },
-        incremental_selection = { enable = true },
+      local langs = {
+        "python", "rust", "lua", "toml", "json", "yaml",
+        "markdown", "markdown_inline", "bash", "regex", "vim", "vimdoc",
+      }
+
+      require("nvim-treesitter").setup()
+      -- Asynchronous, and a no-op when the parsers are already baked into the
+      -- image. The Dockerfile does the synchronous version at build time.
+      require("nvim-treesitter").install(langs)
+
+      vim.api.nvim_create_autocmd("FileType", {
+        group = vim.api.nvim_create_augroup("treesitter_start", { clear = true }),
+        callback = function(ev)
+          local lang = vim.treesitter.language.get_lang(vim.bo[ev.buf].filetype)
+          if not lang then return end
+          -- Only start where a parser actually exists, so opening a file type we
+          -- never installed fails quietly instead of erroring on every buffer.
+          if not pcall(vim.treesitter.start, ev.buf, lang) then return end
+          -- Upstream still calls treesitter indentation experimental; it is the
+          -- one piece here that is not core Neovim. Deliberately no foldexpr:
+          -- treesitter folding would open every file collapsed unless foldlevel
+          -- is also raised, and the previous config had no folding at all.
+          vim.bo[ev.buf].indentexpr = "v:lua.require'nvim-treesitter'.indentexpr()"
+        end,
       })
     end,
   },
