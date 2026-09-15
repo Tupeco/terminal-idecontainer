@@ -91,7 +91,7 @@ somewhere new and silently leaves the original alone. See
 |---|---|
 | `<leader>fk` | Search *every* mapping, with descriptions |
 | `<leader>fh` | Search the help |
-| `<leader><CR>` | Highlight occurrences of the symbol under the cursor |
+| `<leader><CR>` | Highlight occurrences of the symbol under the cursor; press again *on one of them* to dismiss |
 | `<Esc>` | Clear search and occurrence highlights |
 | `g?` | Context-sensitive help inside diffview and neo-tree |
 
@@ -433,9 +433,22 @@ current file and across the workspace.
 ### Highlighting other occurrences of a symbol
 
 `<leader><CR>` lights up every occurrence of the symbol under the cursor, in the
-buffer and on the marker bar. Press it again, or `<Esc>`, to dismiss. It
-persists while you scroll, which is the whole reason it is a key rather than an
-autocommand — see [the marker bar](#occurrence-highlighting-is-on-a-key-not-a-timer).
+buffer and on the marker bar.
+
+What a second press does depends on where the cursor is:
+
+| Cursor is... | `<leader><CR>` does |
+| --- | --- |
+| on one of the lit occurrences | dismisses the highlight |
+| on any other symbol | re-targets to *that* symbol |
+| on nothing (whitespace, a comment) | dismisses, since there is no symbol to ask about |
+
+So walking from symbol to symbol and pressing it is enough; you never have to
+clear first. `<Esc>` dismisses from anywhere.
+
+The highlight persists while you scroll, which is the whole reason it is a key
+rather than an autocommand — see
+[the marker bar](#occurrence-highlighting-is-on-a-key-not-a-timer).
 
 This is the *semantic* version rather than a word match: the language server
 decides what counts as the same symbol, so a local `x` will not light up an
@@ -963,8 +976,10 @@ vim.api.nvim_create_autocmd("LspRequest", {
 })
 ```
 
-`CursorMoved` also triggers an update, so that when `clear_references()` wipes
-the highlights the marks go with them instead of lingering.
+Nothing triggers on `CursorMoved`: the highlight is only ever dismissed
+deliberately, and both places that do it (`<leader><CR>` and `<Esc>`) call
+`SatelliteRefresh` themselves after `clear_references()`, so the stripe empties
+with the buffer.
 
 ### Occurrence highlighting is on a key, not a timer
 
@@ -994,6 +1009,31 @@ editor and wrong at the edges — is `<C-d>` scrolling or navigation?
 Putting it on a key removes the question. It also makes the feature behave like
 `hlsearch`, which is a well-worn Vim idiom rather than something to learn: you
 ask for a highlight, it persists, `<Esc>` clears it. `<Esc>` now clears both.
+
+**A plain toggle was the wrong shape.** "Something is lit, so clear it" makes
+moving to the next symbol a two-press job. The key instead asks where the cursor
+is: on a lit occurrence it dismisses, anywhere else it re-targets. Dismissing is
+then the deliberate act it should be — you are pointing at the thing you want
+gone — and following a symbol around the file costs one press per symbol.
+
+Two details make that work:
+
+- **The cursor test compares extmark bounds by hand.** Extmark ends are
+  exclusive, so querying `nvim_buf_get_extmarks` at the cursor position alone
+  counts the character *just past* a lit word as being on it, which would
+  dismiss where you meant to re-target. Column 3 of `foo bar` is the space, and
+  must read as off.
+- **The clear is unconditional.** Nvim's `documentHighlight` handler only ever
+  *adds* extmarks — neither it nor `buf_highlight_references` removes anything:
+
+  ```
+  highlight 'foo'                        marks=1
+  highlight 'bar' WITHOUT clearing first  marks=2   <- both symbols lit
+  clear first, then highlight 'bar'       marks=1   <- only 'bar'
+  ```
+
+  So a re-target clears before it requests, or the old symbol stays lit
+  alongside the new one.
 
 ### Why not bare `<CR>`
 

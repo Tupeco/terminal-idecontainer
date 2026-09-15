@@ -475,8 +475,8 @@ require("lazy").setup({
       -- ---------------------------------------------------------------------
       -- Custom handler: occurrences of the symbol under the cursor
       --
-      -- `vim.lsp.buf.document_highlight()` (wired to CursorHold in the LspAttach
-      -- block above) highlights occurrences in the visible text by writing
+      -- `vim.lsp.buf.document_highlight()` (bound to <leader><CR> in the
+      -- LspAttach block above) highlights occurrences by writing
       -- extmarks into a namespace Nvim names `nvim.lsp.references`.
       -- nvim_create_namespace is idempotent by name, so this handler reads those
       -- same extmarks back and turns them into scrollbar marks. No second
@@ -662,16 +662,44 @@ vim.api.nvim_create_autocmd("LspAttach", {
       -- so a global `<CR>` map shadows it — and `grr`/`gri` put their results
       -- in the quickfix list.
       local ref_ns = vim.api.nvim_create_namespace("nvim.lsp.references")
+
+      -- Is the cursor sitting inside one of the occurrences currently lit up?
+      -- Nvim's extmark ends are exclusive, so asking nvim_buf_get_extmarks for
+      -- the cursor position alone would count the character just past a word as
+      -- "on" it; the bounds are compared by hand instead.
+      local function on_lit_occurrence()
+        local cur = vim.api.nvim_win_get_cursor(0)
+        local row, col = cur[1] - 1, cur[2]
+        local marks = vim.api.nvim_buf_get_extmarks(
+          bufnr, ref_ns, { row, 0 }, { row, -1 }, { details = true, overlap = true })
+        for _, m in ipairs(marks) do
+          local srow, scol = m[2], m[3]
+          local d = m[4] or {}
+          local erow, ecol = d.end_row or srow, d.end_col or scol
+          if (srow < row or (srow == row and scol <= col))
+            and (erow > row or (erow == row and ecol > col)) then
+            return true
+          end
+        end
+        return false
+      end
+
       map("<leader><CR>", function()
-        local shown = #vim.api.nvim_buf_get_extmarks(bufnr, ref_ns, 0, -1, {}) > 0
-        if shown then
-          vim.lsp.buf.clear_references()
+        -- On a lit occurrence, this dismisses. Anywhere else it re-targets, so
+        -- moving to another symbol and pressing again follows the cursor rather
+        -- than making you clear first.
+        local dismiss = on_lit_occurrence()
+        -- Clear unconditionally: the documentHighlight handler only ever *adds*
+        -- extmarks, so without this a re-target leaves the previous symbol lit
+        -- alongside the new one.
+        vim.lsp.buf.clear_references()
+        if dismiss then
           pcall(vim.cmd, "silent! SatelliteRefresh")
         else
           -- Asynchronous; the marker bar updates itself when the reply lands.
           vim.lsp.buf.document_highlight()
         end
-      end, "Toggle occurrence highlight")
+      end, "Highlight occurrences under cursor (again to dismiss)")
     end
   end,
 })
