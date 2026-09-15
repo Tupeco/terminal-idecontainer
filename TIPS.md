@@ -874,8 +874,8 @@ satellite.nvim.
 | `lsp_references` | Occurrences of the symbol under the cursor (custom, below) |
 | `marks` | Your `a`-`z` marks |
 | `quickfix` | Quickfix entries |
+| `cursor` | Where you are in the file |
 
-`cursor` is deliberately off: the cursorline already says where you are.
 Only the focused window is decorated, and the file tree and diffview panels are
 excluded — a stripe in every split is noise.
 
@@ -926,9 +926,40 @@ Two details that matter if you touch it:
   file many lines collapse onto one bar row, and one mark per row is what you
   want.
 
-The one wrinkle: `document_highlight` is asynchronous, so the extmarks do not
-exist yet when CursorHold fires. The update is deferred ~120ms to let the reply
-land. If the stripe ever looks a beat behind, that is why.
+Three settings on that handler are load-bearing, and each was a visible bug
+before it was right:
+
+- **`overlap = true`.** Satellite renders a mark as overlay virtual text *on*
+  the bar when overlap is true, and as `sign_text` when it is false — and
+  `sign_text` opens a *separate sign column beside the bar*. With
+  `overlap = false` the occurrence marks appeared in their own column next to
+  the diagnostics instead of sharing one, which reads as the scrollbar
+  mysteriously doubling in width.
+- **`priority = 40`, below the diagnostic handler's 50.** Marks landing on the
+  same scrollbar row are resolved by extmark priority. Set higher, occurrences
+  silently cover errors — the stripe shows a symbol marker where there is
+  actually a problem in the file, which is the one thing a marker bar must never
+  do.
+- **Updating on `LspRequest`, not on a timer.** `document_highlight()` is
+  asynchronous, so a fixed delay is a guess: too short and the extmarks do not
+  exist yet, too long and the stripe visibly lags behind the cursor. Nvim fires
+  `LspRequest` with `request.type == "complete"` and `request.method` when a
+  reply lands, so the handler updates exactly then:
+
+```lua
+vim.api.nvim_create_autocmd("LspRequest", {
+  callback = function(ev)
+    local request = ev.data and ev.data.request
+    if request and request.type == "complete"
+      and request.method == "textDocument/documentHighlight" then
+      update()
+    end
+  end,
+})
+```
+
+`CursorMoved` also triggers an update, so that when `clear_references()` wipes
+the highlights the marks go with them instead of lingering.
 
 ## Which tool for which job
 

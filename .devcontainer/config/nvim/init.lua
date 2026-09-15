@@ -463,7 +463,7 @@ require("lazy").setup({
         excluded_filetypes = { "neo-tree", "DiffviewFiles", "DiffviewFileHistory", "help" },
         winblend = 30,
         handlers = {
-          cursor = { enable = false }, -- the cursorline already says where you are
+          cursor = { enable = true },
           search = { enable = true },
           diagnostic = { enable = true },
           gitsigns = { enable = true },
@@ -489,20 +489,48 @@ require("lazy").setup({
       local handler = { name = "lsp_references" }
 
       handler.setup = function(config0, update)
-        handler.config = vim.tbl_deep_extend("force", { enable = true, overlap = false, priority = 60 }, config0 or {})
+        handler.config = vim.tbl_deep_extend("force", {
+          enable = true,
+          -- `overlap = true` draws the mark as overlay virtual text *on* the
+          -- scrollbar, which is what every built-in handler does. With
+          -- `overlap = false` satellite uses `sign_text` instead, which opens a
+          -- separate sign column beside the bar — the marks then sit next to the
+          -- diagnostics rather than sharing the same column.
+          overlap = true,
+          -- Below the diagnostic handler's 50, deliberately. Marks at the same
+          -- scrollbar row are resolved by extmark priority, and an error must
+          -- never be hidden behind "this symbol also appears here".
+          priority = 40,
+        }, config0 or {})
 
         vim.api.nvim_set_hl(0, "SatelliteLspReference", {
           default = true,
           link = "LspReferenceText",
         })
 
-        vim.api.nvim_create_autocmd({ "CursorHold", "CursorMoved" }, {
-          group = vim.api.nvim_create_augroup("satellite_lsp_references", { clear = true }),
-          callback = function()
-            -- document_highlight is asynchronous, so the extmarks do not exist
-            -- yet when CursorHold fires. Let the reply land before redrawing.
-            vim.defer_fn(update, 120)
+        local group = vim.api.nvim_create_augroup("satellite_lsp_references", { clear = true })
+
+        -- Update exactly when the highlight reply lands, rather than guessing
+        -- with a timer. `document_highlight()` is asynchronous, so a fixed delay
+        -- was either too early (no marks yet) or needlessly laggy.
+        vim.api.nvim_create_autocmd("LspRequest", {
+          group = group,
+          callback = function(ev)
+            local request = ev.data and ev.data.request
+            if
+              request
+              and request.type == "complete"
+              and request.method == "textDocument/documentHighlight"
+            then
+              update()
+            end
           end,
+        })
+
+        -- And immediately when they are cleared, so stale marks do not linger.
+        vim.api.nvim_create_autocmd({ "CursorMoved", "CursorMovedI" }, {
+          group = group,
+          callback = update,
         })
       end
 
