@@ -527,11 +527,9 @@ require("lazy").setup({
           end,
         })
 
-        -- And immediately when they are cleared, so stale marks do not linger.
-        vim.api.nvim_create_autocmd({ "CursorMoved", "CursorMovedI" }, {
-          group = group,
-          callback = update,
-        })
+        -- Nothing clears the highlights on cursor movement any more — they are
+        -- dismissed explicitly — so there is no CursorMoved trigger here. The
+        -- clear path calls :SatelliteRefresh itself.
       end
 
       handler.update = function(bufnr, winid)
@@ -650,17 +648,30 @@ vim.api.nvim_create_autocmd("LspAttach", {
     -- after `updatetime` (250ms). The LspReference* highlight groups it uses are
     -- defined by Nvim itself, so this needs nothing from the colorscheme.
     if client and client:supports_method("textDocument/documentHighlight") then
-      local hl_group = vim.api.nvim_create_augroup("lsp_doc_hl_" .. bufnr, { clear = true })
-      vim.api.nvim_create_autocmd({ "CursorHold", "CursorHoldI" }, {
-        group = hl_group,
-        buffer = bufnr,
-        callback = function() vim.lsp.buf.document_highlight() end,
-      })
-      vim.api.nvim_create_autocmd({ "CursorMoved", "CursorMovedI" }, {
-        group = hl_group,
-        buffer = bufnr,
-        callback = function() vim.lsp.buf.clear_references() end,
-      })
+      -- Deliberately a keypress, not an autocommand.
+      --
+      -- Driving this from the cursor means scrolling re-targets it, because
+      -- Vim's cursor cannot leave the viewport and gets dragged along. Every
+      -- automatic fix for that is a guess about intent. Asking for the
+      -- highlight makes it behave like `hlsearch`: it appears when you say so
+      -- and stays until you dismiss it, including while you scroll around
+      -- looking at the very occurrences you asked for.
+      --
+      -- `<leader><CR>` rather than bare `<CR>`: the quickfix window's `<CR>`
+      -- (jump to entry) is built into Nvim rather than a buffer-local mapping,
+      -- so a global `<CR>` map shadows it — and `grr`/`gri` put their results
+      -- in the quickfix list.
+      local ref_ns = vim.api.nvim_create_namespace("nvim.lsp.references")
+      map("<leader><CR>", function()
+        local shown = #vim.api.nvim_buf_get_extmarks(bufnr, ref_ns, 0, -1, {}) > 0
+        if shown then
+          vim.lsp.buf.clear_references()
+          pcall(vim.cmd, "silent! SatelliteRefresh")
+        else
+          -- Asynchronous; the marker bar updates itself when the reply lands.
+          vim.lsp.buf.document_highlight()
+        end
+      end, "Toggle occurrence highlight")
     end
   end,
 })
@@ -674,6 +685,12 @@ vim.diagnostic.config({
 -- ---------------------------------------------------------------------------
 -- Misc keymaps
 -- ---------------------------------------------------------------------------
-vim.keymap.set("n", "<Esc>", "<cmd>nohlsearch<CR>")
+-- One key to dismiss every "highlight" in the buffer: search matches and the
+-- occurrence highlight from <leader><CR>.
+vim.keymap.set("n", "<Esc>", function()
+  vim.cmd("nohlsearch")
+  pcall(vim.lsp.buf.clear_references)
+  pcall(vim.cmd, "silent! SatelliteRefresh")
+end, { desc = "Clear search and occurrence highlights" })
 vim.keymap.set("n", "<leader>w", "<cmd>write<CR>", { desc = "Write" })
 vim.keymap.set("t", "<Esc><Esc>", "<C-\\><C-n>", { desc = "Exit terminal mode" })

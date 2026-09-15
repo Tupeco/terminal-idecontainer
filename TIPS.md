@@ -91,6 +91,8 @@ somewhere new and silently leaves the original alone. See
 |---|---|
 | `<leader>fk` | Search *every* mapping, with descriptions |
 | `<leader>fh` | Search the help |
+| `<leader><CR>` | Highlight occurrences of the symbol under the cursor |
+| `<Esc>` | Clear search and occurrence highlights |
 | `g?` | Context-sensitive help inside diffview and neo-tree |
 
 **When something is stale**
@@ -430,13 +432,16 @@ current file and across the workspace.
 
 ### Highlighting other occurrences of a symbol
 
-Automatic: rest the cursor on a symbol for `updatetime` (250ms) and the other
-occurrences light up, cleared as soon as you move. This is the *semantic*
-version rather than a word match — the language server decides what counts as
-the same symbol, so a local `x` will not light up an unrelated `x` in another
-scope.
+`<leader><CR>` lights up every occurrence of the symbol under the cursor, in the
+buffer and on the marker bar. Press it again, or `<Esc>`, to dismiss. It
+persists while you scroll, which is the whole reason it is a key rather than an
+autocommand — see [the marker bar](#occurrence-highlighting-is-on-a-key-not-a-timer).
 
-It only runs for servers advertising `textDocument/documentHighlight`, which
+This is the *semantic* version rather than a word match: the language server
+decides what counts as the same symbol, so a local `x` will not light up an
+unrelated `x` in another scope.
+
+It only works for servers advertising `textDocument/documentHighlight`, which
 basedpyright and rust-analyzer both do. The `LspReference*` highlight groups
 are defined by Nvim itself, so this needs nothing from the colorscheme.
 
@@ -903,8 +908,8 @@ No scrollbar plugin ships symbol occurrences — not satellite, scrollview,
 mini.map or nvim-scrollbar. It is about thirty lines here, and the trick is
 worth knowing because it costs nothing:
 
-`vim.lsp.buf.document_highlight()` — already wired to CursorHold for the
-in-buffer highlighting — writes its extmarks into a namespace Nvim names
+`vim.lsp.buf.document_highlight()` — what `<leader><CR>` calls for the in-buffer
+highlighting — writes its extmarks into a namespace Nvim names
 `nvim.lsp.references` (see `lsp/util.lua`). `nvim_create_namespace` is
 idempotent by name, so the handler reads those same extmarks back:
 
@@ -960,6 +965,54 @@ vim.api.nvim_create_autocmd("LspRequest", {
 
 `CursorMoved` also triggers an update, so that when `clear_references()` wipes
 the highlights the marks go with them instead of lingering.
+
+### Occurrence highlighting is on a key, not a timer
+
+`<leader><CR>` highlights every occurrence of the symbol under the cursor, in the
+buffer and on the marker bar. Press it again, or `<Esc>`, to dismiss.
+
+This started out automatic, on `CursorHold`. The problem is structural: **Vim's
+cursor cannot leave the viewport**, so scrolling far enough drags it onto
+whatever line is now at the edge, silently re-targeting the highlight — exactly
+while you are scrolling to look at the occurrences you just asked for. A GUI
+editor avoids this only because its caret can go off-screen.
+
+Detecting "the cursor only moved because the viewport did" does not work.
+Measured:
+
+```
+<C-e>  (wheel)   topline 12 -> 11,  lnum 20 -> 19    deltas match
+k      (motion)  topline 12 -> 11,  lnum 20 -> 19    deltas match
+```
+
+Pressing `k` at the `scrolloff` boundary scrolls the viewport by exactly as much
+as the cursor moves. After the fact the two are indistinguishable; the only
+difference is intent. Reading intent from the keypress works, but it means a
+table of "these keys count as scrolling", which is a guess about how you use the
+editor and wrong at the edges — is `<C-d>` scrolling or navigation?
+
+Putting it on a key removes the question. It also makes the feature behave like
+`hlsearch`, which is a well-worn Vim idiom rather than something to learn: you
+ask for a highlight, it persists, `<Esc>` clears it. `<Esc>` now clears both.
+
+### Why not bare `<CR>`
+
+`<CR>` is tempting — it is just a motion in normal mode, equivalent to `+`. But
+the quickfix window's `<CR>` ("jump to this entry") is **built into Nvim, not a
+buffer-local mapping**, so a global `<CR>` map shadows it. Tested:
+
+```
+with a global <CR> map, in the quickfix window:
+  our mapping fired: 1 time(s)
+  still in the quickfix window: true
+  jumped to line 42: false
+```
+
+`grr` and `gri` put their results in the quickfix list, so mapping `<CR>` would
+trade occurrence highlighting for the ability to jump to a reference. Plugin
+windows that map `<CR>` buffer-locally — neo-tree, the diffview panels — are
+unaffected, because buffer-local mappings win. It is specifically the built-in
+behaviours that lose.
 
 ## Which tool for which job
 
