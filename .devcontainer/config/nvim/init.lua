@@ -445,90 +445,85 @@ require("lazy").setup({
   -- PyCharm's error stripe: the marker bar down the right-hand edge showing
   -- where the problems are in the whole file, not just the visible part.
   --
-  -- The built-in sign groups cover most of it. Occurrences of the symbol under
-  -- the cursor are not built in anywhere (no scrollbar plugin has that), so the
-  -- custom group below adds them — reading the extmarks Nvim's own LSP reference
-  -- highlighter already writes, so it costs no extra LSP requests.
+  -- satellite rather than nvim-scrollview because it has a gitsigns handler, so
+  -- changed hunks appear on the stripe alongside the diagnostics. Scrollview
+  -- covers more sign types overall but has no notion of git hunks: its
+  -- `latestchange` and `changelist` groups are Vim's own change marks.
   --
-  -- If this ever goes stale, satellite.nvim is the closest equivalent and is by
-  -- the author of gitsigns; see TIPS.md for what porting would involve.
+  -- Occurrences of the symbol under the cursor are not built into any scrollbar
+  -- plugin, so the handler below adds them. It reads the extmarks Nvim's own LSP
+  -- reference highlighter already writes, so it costs no extra LSP requests.
   {
-    "dstein64/nvim-scrollview",
+    "lewis6991/satellite.nvim",
     event = "VeryLazy",
     config = function()
-      local scrollview = require("scrollview")
-
-      scrollview.setup({
-        -- Only decorate the focused window. With several splits open, stripes in
-        -- all of them is noise.
+      require("satellite").setup({
+        -- Decorate only the focused window; a stripe in every split is noise.
         current_only = true,
         excluded_filetypes = { "neo-tree", "DiffviewFiles", "DiffviewFileHistory", "help" },
-        signs_on_startup = {
-          "diagnostics",  -- errors and warnings: the main event
-          "search",       -- every match of the last search
-          "marks",
-          "conflicts",    -- merge conflict markers
-          "keywords",     -- TODO / FIXME / HACK / XXX
-          "latestchange",
+        winblend = 30,
+        handlers = {
+          cursor = { enable = false }, -- the cursorline already says where you are
+          search = { enable = true },
+          diagnostic = { enable = true },
+          gitsigns = { enable = true },
+          marks = { enable = true, show_builtins = false },
+          quickfix = { enable = true },
         },
       })
 
       -- ---------------------------------------------------------------------
-      -- Custom sign group: occurrences of the symbol under the cursor
+      -- Custom handler: occurrences of the symbol under the cursor
       --
-      -- `vim.lsp.buf.document_highlight()` (wired up in the LspAttach block
-      -- above) highlights occurrences in the visible text by writing extmarks
-      -- into a namespace Nvim names `nvim.lsp.references`. nvim_create_namespace
-      -- is idempotent by name, so we can read those same extmarks back and turn
-      -- them into scrollbar signs. That is the whole trick: no second request,
-      -- and it stays in sync with the highlighting by construction.
+      -- `vim.lsp.buf.document_highlight()` (wired to CursorHold in the LspAttach
+      -- block above) highlights occurrences in the visible text by writing
+      -- extmarks into a namespace Nvim names `nvim.lsp.references`.
+      -- nvim_create_namespace is idempotent by name, so this handler reads those
+      -- same extmarks back and turns them into scrollbar marks. No second
+      -- request, and the stripe cannot drift out of sync with the highlighting
+      -- because both come from the same marks.
       -- ---------------------------------------------------------------------
-      local group = "lsp_references"
-      scrollview.register_sign_group(group)
-      local registration = scrollview.register_sign_spec({
-        group = group,
-        -- Same highlight the in-text occurrences use, so the stripe and the
-        -- buffer agree visually.
-        highlight = "LspReferenceText",
-        symbol = "▐",
-        current_only = true,
-        priority = 60,
-      })
-      scrollview.set_sign_group_state(group, true)
-
+      local util = require("satellite.util")
       local ref_ns = vim.api.nvim_create_namespace("nvim.lsp.references")
 
-      local function occurrence_lines(bufnr)
-        local marks = vim.api.nvim_buf_get_extmarks(bufnr, ref_ns, 0, -1, {})
-        local seen, lines = {}, {}
-        for _, m in ipairs(marks) do
-          local lnum = m[2] + 1 -- extmarks are 0-indexed, sign lines are 1-indexed
-          if not seen[lnum] then
-            seen[lnum] = true
-            lines[#lines + 1] = lnum
-          end
-        end
-        return lines
+      local handler = { name = "lsp_references" }
+
+      handler.setup = function(config0, update)
+        handler.config = vim.tbl_deep_extend("force", { enable = true, overlap = false, priority = 60 }, config0 or {})
+
+        vim.api.nvim_set_hl(0, "SatelliteLspReference", {
+          default = true,
+          link = "LspReferenceText",
+        })
+
+        vim.api.nvim_create_autocmd({ "CursorHold", "CursorMoved" }, {
+          group = vim.api.nvim_create_augroup("satellite_lsp_references", { clear = true }),
+          callback = function()
+            -- document_highlight is asynchronous, so the extmarks do not exist
+            -- yet when CursorHold fires. Let the reply land before redrawing.
+            vim.defer_fn(update, 120)
+          end,
+        })
       end
 
-      scrollview.set_sign_group_callback(group, function()
-        for _, winid in ipairs(scrollview.get_sign_eligible_windows()) do
-          local bufnr = vim.api.nvim_win_get_buf(winid)
-          vim.b[bufnr][registration.name] = occurrence_lines(bufnr)
+      handler.update = function(bufnr, winid)
+        local marks, seen = {}, {}
+        for _, m in ipairs(vim.api.nvim_buf_get_extmarks(bufnr, ref_ns, 0, -1, {})) do
+          -- Extmark rows and row_to_barpos are both 0-indexed, so no adjustment.
+          local pos = util.row_to_barpos(winid, m[2])
+          if not seen[pos] then
+            seen[pos] = true
+            marks[#marks + 1] = {
+              pos = pos,
+              highlight = "SatelliteLspReference",
+              symbol = "▐",
+            }
+          end
         end
-      end)
+        return marks
+      end
 
-      -- document_highlight is asynchronous, so the extmarks do not exist yet when
-      -- CursorHold fires. Refresh shortly after, once the reply has landed.
-      vim.api.nvim_create_autocmd({ "CursorHold", "CursorMoved" }, {
-        group = vim.api.nvim_create_augroup("scrollview_lsp_refs", { clear = true }),
-        callback = function()
-          if not scrollview.is_sign_group_active(group) then return end
-          vim.defer_fn(function()
-            pcall(vim.cmd, "silent! ScrollViewRefresh")
-          end, 120)
-        end,
-      })
+      require("satellite.handlers").register(handler)
     end,
   },
 

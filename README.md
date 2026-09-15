@@ -157,7 +157,7 @@ workspace volume is untouched by container restarts.
 | delta | Side-by-side `git diff`, `n`/`N` between files |
 | tmux, ripgrep, fd, fzf, jq, git-lfs | Supporting tools |
 | man-db, manpages, bash-completion | Working `man` and tab completion; see TIPS.md |
-| nvim-scrollview | PyCharm-style marker bar: diagnostics and symbol occurrences on the scrollbar |
+| satellite.nvim | PyCharm-style marker bar: diagnostics, git hunks and symbol occurrences on the scrollbar |
 | Node.js 22 | Only for npx-based MCP servers |
 
 ## Choosing between the three editors
