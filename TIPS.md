@@ -860,6 +860,75 @@ system and the C library. If you ever need that space back, dropping
 pages (syscalls and libc), which matter for C and Rust work but nothing else
 here.
 
+## The marker bar
+
+PyCharm's error stripe — the column down the right edge showing where the
+problems are in the *whole* file, not just the visible part. Provided by
+nvim-scrollview, which draws signs on the scrollbar.
+
+Active groups, and what each marks:
+
+| Group | Shows |
+|---|---|
+| `diagnostics` | Errors, warnings, hints — the main event |
+| `search` | Every match of the last search |
+| `lsp_references` | Occurrences of the symbol under the cursor |
+| `conflicts` | Merge conflict markers |
+| `keywords` | TODO, FIXME, HACK, WARN, XXX |
+| `marks` | Your `a`-`z` marks |
+| `latestchange` | Where you last edited |
+
+Only the focused window is decorated (`current_only`), and the file tree and
+diffview panels are excluded — a stripe in every split is noise.
+
+`:ScrollViewDisable` / `:ScrollViewEnable` toggle it; `:ScrollViewEnable cursor`
+and the other group names turn individual groups on, and
+`:help scrollview-signs-built-in` lists the ones not enabled here (`folds`,
+`quickfix`, `loclist`, `spell`, `indent`, `trail`, `textwidth`, `changelist`).
+
+### The occurrences group is custom
+
+No scrollbar plugin ships symbol occurrences — not scrollview, satellite,
+mini.map or nvim-scrollbar. It is about twenty lines here, and the trick is
+worth knowing because it costs nothing:
+
+`vim.lsp.buf.document_highlight()` — already wired to CursorHold for the
+in-buffer highlighting — writes its extmarks into a namespace Nvim names
+`nvim.lsp.references` (see `lsp/util.lua`). `nvim_create_namespace` is
+idempotent by name, so the sign group can simply read those same extmarks back:
+
+```lua
+local ref_ns = vim.api.nvim_create_namespace("nvim.lsp.references")
+vim.api.nvim_buf_get_extmarks(bufnr, ref_ns, 0, -1, {})
+```
+
+No second LSP request, and the stripe cannot drift out of sync with the
+highlighting because both come from the same marks. Several occurrences on one
+line collapse to a single sign.
+
+The one wrinkle: `document_highlight` is asynchronous, so the extmarks do not
+exist yet when CursorHold fires. The refresh is deferred ~120ms to let the reply
+land. If the stripe ever looks a beat behind, that is why.
+
+### If scrollview goes stale
+
+It was the most actively maintained of the four when chosen (last commit
+2026-08-09, against satellite's 2026-05-01, mini.map's 2026-07-07 and
+nvim-scrollbar's 2025-11-17). If that changes,
+[satellite.nvim](https://github.com/lewis6991/satellite.nvim) is the closest
+port target, and it is by the author of gitsigns.
+
+What porting would involve: satellite uses handlers rather than sign groups. A
+handler is a table with `name`, `config`, `enabled()` and `setup(config, update)`
+— so the registration and emit layer changes, but **the extmark-reading logic
+above transfers verbatim**, since it depends only on Nvim, not on the plugin.
+
+One thing satellite has that scrollview does not: a **gitsigns handler**, so it
+can mark changed hunks on the stripe. Scrollview's `latestchange` and
+`changelist` are Vim's own change marks, not git hunks. If seeing your diff on
+the marker bar starts to matter more than the group breadth scrollview offers,
+that alone is a reason to switch.
+
 ## Which tool for which job
 
 | Want | Use |

@@ -442,6 +442,96 @@ require("lazy").setup({
     },
   },
 
+  -- PyCharm's error stripe: the marker bar down the right-hand edge showing
+  -- where the problems are in the whole file, not just the visible part.
+  --
+  -- The built-in sign groups cover most of it. Occurrences of the symbol under
+  -- the cursor are not built in anywhere (no scrollbar plugin has that), so the
+  -- custom group below adds them — reading the extmarks Nvim's own LSP reference
+  -- highlighter already writes, so it costs no extra LSP requests.
+  --
+  -- If this ever goes stale, satellite.nvim is the closest equivalent and is by
+  -- the author of gitsigns; see TIPS.md for what porting would involve.
+  {
+    "dstein64/nvim-scrollview",
+    event = "VeryLazy",
+    config = function()
+      local scrollview = require("scrollview")
+
+      scrollview.setup({
+        -- Only decorate the focused window. With several splits open, stripes in
+        -- all of them is noise.
+        current_only = true,
+        excluded_filetypes = { "neo-tree", "DiffviewFiles", "DiffviewFileHistory", "help" },
+        signs_on_startup = {
+          "diagnostics",  -- errors and warnings: the main event
+          "search",       -- every match of the last search
+          "marks",
+          "conflicts",    -- merge conflict markers
+          "keywords",     -- TODO / FIXME / HACK / XXX
+          "latestchange",
+        },
+      })
+
+      -- ---------------------------------------------------------------------
+      -- Custom sign group: occurrences of the symbol under the cursor
+      --
+      -- `vim.lsp.buf.document_highlight()` (wired up in the LspAttach block
+      -- above) highlights occurrences in the visible text by writing extmarks
+      -- into a namespace Nvim names `nvim.lsp.references`. nvim_create_namespace
+      -- is idempotent by name, so we can read those same extmarks back and turn
+      -- them into scrollbar signs. That is the whole trick: no second request,
+      -- and it stays in sync with the highlighting by construction.
+      -- ---------------------------------------------------------------------
+      local group = "lsp_references"
+      scrollview.register_sign_group(group)
+      local registration = scrollview.register_sign_spec({
+        group = group,
+        -- Same highlight the in-text occurrences use, so the stripe and the
+        -- buffer agree visually.
+        highlight = "LspReferenceText",
+        symbol = "▐",
+        current_only = true,
+        priority = 60,
+      })
+      scrollview.set_sign_group_state(group, true)
+
+      local ref_ns = vim.api.nvim_create_namespace("nvim.lsp.references")
+
+      local function occurrence_lines(bufnr)
+        local marks = vim.api.nvim_buf_get_extmarks(bufnr, ref_ns, 0, -1, {})
+        local seen, lines = {}, {}
+        for _, m in ipairs(marks) do
+          local lnum = m[2] + 1 -- extmarks are 0-indexed, sign lines are 1-indexed
+          if not seen[lnum] then
+            seen[lnum] = true
+            lines[#lines + 1] = lnum
+          end
+        end
+        return lines
+      end
+
+      scrollview.set_sign_group_callback(group, function()
+        for _, winid in ipairs(scrollview.get_sign_eligible_windows()) do
+          local bufnr = vim.api.nvim_win_get_buf(winid)
+          vim.b[bufnr][registration.name] = occurrence_lines(bufnr)
+        end
+      end)
+
+      -- document_highlight is asynchronous, so the extmarks do not exist yet when
+      -- CursorHold fires. Refresh shortly after, once the reply has landed.
+      vim.api.nvim_create_autocmd({ "CursorHold", "CursorMoved" }, {
+        group = vim.api.nvim_create_augroup("scrollview_lsp_refs", { clear = true }),
+        callback = function()
+          if not scrollview.is_sign_group_active(group) then return end
+          vim.defer_fn(function()
+            pcall(vim.cmd, "silent! ScrollViewRefresh")
+          end, 120)
+        end,
+      })
+    end,
+  },
+
   { "nvim-lualine/lualine.nvim", config = function()
       require("lualine").setup({ options = { theme = "tokyonight" } })
     end },
