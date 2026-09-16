@@ -81,7 +81,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         sudo locales procps \
         man-db manpages manpages-dev \
         bash-completion \
-        bat du-dust duf eza moor \
+        bat du-dust duf eza moor htop \
     && ln -sf /usr/bin/fdfind /usr/local/bin/fd \
     && rm -rf /var/lib/apt/lists/*
 
