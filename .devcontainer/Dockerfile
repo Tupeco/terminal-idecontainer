@@ -156,6 +156,19 @@ ENV DELTA_PAGER=less
 #
 # Installed system-wide so the toolchain lives in the image while only the
 # registry cache is a volume. Mirrors the layout of the official rust image.
+#
+# registry/ and git/ are created below on purpose, even though nothing puts
+# anything in them here. Compose mounts a named volume at ${CARGO_HOME}/registry,
+# and Docker seeds a new volume from the image -- ownership included -- but only
+# where the path exists in the image. `chmod -R a+w` cannot cover a directory
+# nothing has created yet, so without the mkdir Docker creates the mountpoint
+# itself, root-owned, and every `cargo build` as ${USERNAME} dies on
+# "failed to create directory .../registry/cache: Permission denied".
+#
+# That seeding happens once, when the volume is first created. An existing
+# volume keeps the ownership it already has, so a project that has already hit
+# this needs `docker volume rm <project>_cargo-registry` (or a chown in place)
+# as well as a rebuild.
 # ---------------------------------------------------------------------------
 ENV RUSTUP_HOME=/usr/local/rustup \
     CARGO_HOME=/usr/local/cargo \
@@ -167,6 +180,8 @@ RUN set -eux; \
           --default-toolchain "${RUST_TOOLCHAIN}" \
           -c rust-analyzer -c clippy -c rustfmt -c rust-src; \
     chmod -R a+w "${RUSTUP_HOME}" "${CARGO_HOME}"; \
+    mkdir -p "${CARGO_HOME}/registry" "${CARGO_HOME}/git"; \
+    chown -R "${USER_UID}:${USER_GID}" "${CARGO_HOME}/registry" "${CARGO_HOME}/git"; \
     rustc --version; \
     rust-analyzer --version
 

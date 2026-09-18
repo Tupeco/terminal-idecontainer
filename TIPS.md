@@ -101,7 +101,7 @@ somewhere new and silently leaves the original alone. See
 |---|---|
 | `<leader>fk` | Search *every* mapping, with descriptions |
 | `<leader>fh` | Search the help |
-| `<leader><CR>` | Highlight occurrences of the symbol under the cursor; press again *on one of them* to dismiss |
+| `<leader><CR>` | Highlight occurrences of the thing under the cursor; press again *on one of them* to dismiss |
 | `<Esc>` | Clear search and occurrence highlights |
 | `g?` | Context-sensitive help inside diffview and neo-tree |
 
@@ -112,6 +112,8 @@ somewhere new and silently leaves the original alone. See
 | `:lsp restart` | Reload the language server, e.g. after installing packages |
 | `:checktime` | Re-read files changed outside nvim |
 | `:checkhealth vim.lsp` | What the servers are doing (the old `:LspInfo`) |
+| `:RustStatus` | What rust-analyzer has loaded — crates, and their dependencies |
+| `:Inspect` | Which highlight group is colouring the thing under the cursor |
 
 ## Working in a project
 
@@ -460,17 +462,24 @@ The highlight persists while you scroll, which is the whole reason it is a key
 rather than an autocommand — see
 [the marker bar](#occurrence-highlighting-is-on-a-key-not-a-timer).
 
-This is the *semantic* version rather than a word match: the language server
-decides what counts as the same symbol, so a local `x` will not light up an
-unrelated `x` in another scope.
+It prefers the *semantic* answer: the language server decides what counts as
+the same symbol, so a local `x` will not light up an unrelated `x` in another
+scope. The `LspReference*` highlight groups it uses are defined by Nvim itself,
+so this needs nothing from the colorscheme.
 
-It only works for servers advertising `textDocument/documentHighlight`, which
-basedpyright and rust-analyzer both do. The `LspReference*` highlight groups
-are defined by Nvim itself, so this needs nothing from the colorscheme.
+When there is no semantic answer it falls back to a textual one — the same
+whole-word match `*` does, minus the jump. That happens when no server is
+attached, when the server does not advertise `textDocument/documentHighlight`,
+and, the case worth knowing about, when the server is attached but has not
+resolved *this* name. An unresolved name gets you `nil` back rather than an
+empty list, which is exactly the state a missing dependency leaves you in, and
+exactly when you most want to see where a name is used. See
+[red underlines that say nothing](#rust-red-underlines-that-say-nothing-and-k-has-no-information).
 
-For a plain textual match, and in buffers with no LSP, `*` and `#` still search
-forward and backward for the word under the cursor, and `:set hlsearch` keeps
-every match lit until `<Esc>`.
+The fallback is an ordinary search, so `n` and `N` walk the occurrences and `q/`
+has the pattern in its history. It sets `\V\<word\>` — literal, whole-word —
+without moving the cursor. `<Esc>` clears either kind. A search *you* ran is
+never cleared by it: dismissing only touches a pattern this put there.
 
 ## Comparing revisions with diffview
 
@@ -931,8 +940,8 @@ No scrollbar plugin ships symbol occurrences — not satellite, scrollview,
 mini.map or nvim-scrollbar. It is about thirty lines here, and the trick is
 worth knowing because it costs nothing:
 
-`vim.lsp.buf.document_highlight()` — what `<leader><CR>` calls for the in-buffer
-highlighting — writes its extmarks into a namespace Nvim names
+The occurrence highlighting — `<leader><CR>`, `lua/occurrences.lua` — writes its
+extmarks into a namespace Nvim names
 `nvim.lsp.references` (see `lsp/util.lua`). `nvim_create_namespace` is
 idempotent by name, so the handler reads those same extmarks back:
 
@@ -1262,6 +1271,45 @@ features, it starts shadowing core files with versions written for a different
 Neovim. When a traceback points only at `$VIMRUNTIME`, check what is overriding
 it — `:checkhealth vim.treesitter` and `:lua =vim.treesitter.query.get('markdown','injections')`
 show which file actually won.
+
+### Rust: red underlines that say nothing, and `K` has no information
+
+Almost always unfetched dependencies rather than an editor problem. Check the
+build first: `cargo build` failing with
+
+```
+error: failed to create directory `/usr/local/cargo/registry/cache/...`
+Caused by: Permission denied (os error 13)
+```
+
+means the registry volume is root-owned. `sudo chown -R dev:dev
+/usr/local/cargo/registry` fixes the running container; the Dockerfile now
+pre-creates that directory so new projects are seeded correctly, but a volume
+that already exists keeps its ownership.
+
+The editor half follows from it, and is worth understanding because nothing
+tells you. rust-analyzer loads the workspace, reports success, and produces
+**no diagnostics and no messages at all** — measured on a crate whose
+dependencies could not be fetched:
+
+```
+diagnostics in the buffer: 0
+what the server told us  : (nothing)
+```
+
+What you see instead is a semantic token. Unresolved names come back typed
+`unresolvedReference`, which Nvim renders as `@lsp.type.unresolvedReference.rust`
+— red. That is a colour, not a report, so there is nothing for `K` to show and
+nothing for a diagnostic float to open. `:Inspect` on a red name says so
+outright, and `:RustStatus` shows the cause directly:
+
+```
+broken   Dependencies:
+working  Dependencies: serde=Crate(Id(587)), serde_json=Crate(Id(58b))
+```
+
+Once the crates are fetched, the same names come back as `namespace` tokens and
+hover works, without touching the editor's configuration.
 
 ### The file tree stole my full-width bottom window
 

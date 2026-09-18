@@ -475,8 +475,8 @@ require("lazy").setup({
       -- ---------------------------------------------------------------------
       -- Custom handler: occurrences of the symbol under the cursor
       --
-      -- `vim.lsp.buf.document_highlight()` (bound to <leader><CR> in the
-      -- LspAttach block above) highlights occurrences by writing
+      -- The occurrence highlighting (<leader><CR>, lua/occurrences.lua)
+      -- writes occurrences by putting
       -- extmarks into a namespace Nvim names `nvim.lsp.references`.
       -- nvim_create_namespace is idempotent by name, so this handler reads those
       -- same extmarks back and turns them into scrollbar marks. No second
@@ -503,12 +503,28 @@ require("lazy").setup({
           priority = 40,
         }, config0 or {})
 
-        vim.api.nvim_set_hl(0, "SatelliteLspReference", {
-          default = true,
-          link = "LspReferenceText",
-        })
+        -- Take the *background* of the in-buffer highlight and use it as the
+        -- mark's foreground -- the trick satellite's own search handler uses to
+        -- turn a highlight you see behind text into a glyph you see on the bar.
+        -- Same visual language as the search marks, still the occurrence colour
+        -- rather than the search colour.
+        local function setup_hl()
+          local ref = vim.api.nvim_get_hl(0, { name = "LspReferenceText", link = false })
+          if ref.bg then
+            vim.api.nvim_set_hl(0, "SatelliteLspReference",
+              { default = true, fg = ref.bg, ctermfg = ref.ctermbg })
+          else
+            vim.api.nvim_set_hl(0, "SatelliteLspReference",
+              { default = true, link = "LspReferenceText" })
+          end
+        end
+        setup_hl()
 
         local group = vim.api.nvim_create_augroup("satellite_lsp_references", { clear = true })
+
+        -- `:colorscheme` does a `highlight clear`, so the derived colour has to
+        -- be worked out again afterwards.
+        vim.api.nvim_create_autocmd("ColorScheme", { group = group, callback = setup_hl })
 
         -- Update exactly when the highlight reply lands, rather than guessing
         -- with a timer. `document_highlight()` is asynchronous, so a fixed delay
@@ -532,19 +548,28 @@ require("lazy").setup({
         -- clear path calls :SatelliteRefresh itself.
       end
 
+      -- satellite's own ramp, so an occurrence mark reads the same way a search
+      -- mark does: more occurrences folded into one scrollbar row, fuller glyph.
+      local SYMBOLS = { "⠂", "⠅", "⠇", "⠗", "⠟", "⠿" }
+
       handler.update = function(bufnr, winid)
-        local marks, seen = {}, {}
+        local counts = {}
         for _, m in ipairs(vim.api.nvim_buf_get_extmarks(bufnr, ref_ns, 0, -1, {})) do
           -- Extmark rows and row_to_barpos are both 0-indexed, so no adjustment.
           local pos = util.row_to_barpos(winid, m[2])
-          if not seen[pos] then
-            seen[pos] = true
-            marks[#marks + 1] = {
-              pos = pos,
-              highlight = "SatelliteLspReference",
-              symbol = "▐",
-            }
-          end
+          counts[pos] = (counts[pos] or 0) + 1
+        end
+        local marks = {}
+        for pos, n in pairs(counts) do
+          marks[#marks + 1] = {
+            pos = pos,
+            highlight = "SatelliteLspReference",
+            -- Saturate at the last symbol. satellite's search handler instead
+            -- *drops* a row once its running total passes the ramp, which makes
+            -- its densest regions render as a sparser glyph than their
+            -- neighbours; not worth copying.
+            symbol = SYMBOLS[math.min(n, #SYMBOLS)],
+          }
         end
         return marks
       end
@@ -641,66 +666,6 @@ vim.api.nvim_create_autocmd("LspAttach", {
     if client and client:supports_method("textDocument/inlayHint") then
       vim.lsp.inlay_hint.enable(true, { bufnr = bufnr })
     end
-
-    -- Highlight the other occurrences of whatever is under the cursor. This is
-    -- the semantic version, not a word match: the server decides what counts as
-    -- the same symbol, so a local `x` does not light up an unrelated `x`. Fires
-    -- after `updatetime` (250ms). The LspReference* highlight groups it uses are
-    -- defined by Nvim itself, so this needs nothing from the colorscheme.
-    if client and client:supports_method("textDocument/documentHighlight") then
-      -- Deliberately a keypress, not an autocommand.
-      --
-      -- Driving this from the cursor means scrolling re-targets it, because
-      -- Vim's cursor cannot leave the viewport and gets dragged along. Every
-      -- automatic fix for that is a guess about intent. Asking for the
-      -- highlight makes it behave like `hlsearch`: it appears when you say so
-      -- and stays until you dismiss it, including while you scroll around
-      -- looking at the very occurrences you asked for.
-      --
-      -- `<leader><CR>` rather than bare `<CR>`: the quickfix window's `<CR>`
-      -- (jump to entry) is built into Nvim rather than a buffer-local mapping,
-      -- so a global `<CR>` map shadows it — and `grr`/`gri` put their results
-      -- in the quickfix list.
-      local ref_ns = vim.api.nvim_create_namespace("nvim.lsp.references")
-
-      -- Is the cursor sitting inside one of the occurrences currently lit up?
-      -- Nvim's extmark ends are exclusive, so asking nvim_buf_get_extmarks for
-      -- the cursor position alone would count the character just past a word as
-      -- "on" it; the bounds are compared by hand instead.
-      local function on_lit_occurrence()
-        local cur = vim.api.nvim_win_get_cursor(0)
-        local row, col = cur[1] - 1, cur[2]
-        local marks = vim.api.nvim_buf_get_extmarks(
-          bufnr, ref_ns, { row, 0 }, { row, -1 }, { details = true, overlap = true })
-        for _, m in ipairs(marks) do
-          local srow, scol = m[2], m[3]
-          local d = m[4] or {}
-          local erow, ecol = d.end_row or srow, d.end_col or scol
-          if (srow < row or (srow == row and scol <= col))
-            and (erow > row or (erow == row and ecol > col)) then
-            return true
-          end
-        end
-        return false
-      end
-
-      map("<leader><CR>", function()
-        -- On a lit occurrence, this dismisses. Anywhere else it re-targets, so
-        -- moving to another symbol and pressing again follows the cursor rather
-        -- than making you clear first.
-        local dismiss = on_lit_occurrence()
-        -- Clear unconditionally: the documentHighlight handler only ever *adds*
-        -- extmarks, so without this a re-target leaves the previous symbol lit
-        -- alongside the new one.
-        vim.lsp.buf.clear_references()
-        if dismiss then
-          pcall(vim.cmd, "silent! SatelliteRefresh")
-        else
-          -- Asynchronous; the marker bar updates itself when the reply lands.
-          vim.lsp.buf.document_highlight()
-        end
-      end, "Highlight occurrences under cursor (again to dismiss)")
-    end
   end,
 })
 
@@ -711,14 +676,76 @@ vim.diagnostic.config({
 })
 
 -- ---------------------------------------------------------------------------
+-- :RustStatus — what rust-analyzer actually has loaded
+-- ---------------------------------------------------------------------------
+-- Worth having because of one specific silence. When Cargo cannot fetch the
+-- dependencies, rust-analyzer still loads the workspace and reports success:
+-- no diagnostics, no window/showMessage, nothing in the log. The only visible
+-- symptom is that unresolved names come back with the `unresolvedReference`
+-- semantic token (highlight group @lsp.type.unresolvedReference.rust, red) and
+-- hover has nothing to say about them — a colour, not a report.
+--
+-- This asks the server directly. The `Dependencies:` line for the current
+-- crate is the answer: empty means the crate graph has no dependencies in it,
+-- so fix Cargo rather than the editor. `:Inspect` on a red name is the other
+-- half of the same diagnosis — it names the highlight group doing the
+-- underlining.
+vim.api.nvim_create_user_command("RustStatus", function()
+  local buf = vim.api.nvim_get_current_buf()
+  local client = vim.lsp.get_clients({ bufnr = buf, name = "rust_analyzer" })[1]
+  if not client then
+    vim.notify("rust-analyzer is not attached to this buffer", vim.log.levels.WARN)
+    return
+  end
+  client:request("rust-analyzer/analyzerStatus",
+    { textDocument = vim.lsp.util.make_text_document_params(buf) },
+    function(err, result)
+      if err then
+        vim.notify("rust-analyzer/analyzerStatus failed: " .. tostring(err.message),
+          vim.log.levels.ERROR)
+        return
+      end
+      local b = vim.api.nvim_create_buf(false, true)
+      vim.api.nvim_buf_set_lines(b, 0, -1, false,
+        vim.split(tostring(result or ""), "\n", { trimempty = false }))
+      vim.bo[b].modifiable = false
+      local w = math.min(110, math.floor(vim.o.columns * 0.9))
+      local h = math.floor(vim.o.lines * 0.9)
+      vim.api.nvim_open_win(b, true, {
+        relative = "editor",
+        width = w,
+        height = h,
+        row = math.floor((vim.o.lines - h) / 2),
+        col = math.floor((vim.o.columns - w) / 2),
+        border = "rounded",
+        title = " rust-analyzer status ",
+        title_pos = "center",
+      })
+      vim.keymap.set("n", "q", "<cmd>close<cr>",
+        { buffer = b, nowait = true, desc = "Close" })
+    end, buf)
+end, { desc = "What rust-analyzer has loaded for this file" })
+
+-- ---------------------------------------------------------------------------
 -- Misc keymaps
 -- ---------------------------------------------------------------------------
+-- Highlight every occurrence of the thing under the cursor: semantically when
+-- a language server can say what "the same symbol" means, textually when it
+-- cannot. Global rather than per-LSP-buffer, because the textual path needs no
+-- server -- see lua/occurrences.lua for why the fallback exists at all.
+--
+-- `<leader><CR>` rather than bare `<CR>`: the quickfix window's `<CR>` (jump to
+-- entry) is built into Nvim rather than a buffer-local mapping, so a global
+-- `<CR>` map shadows it -- and `grr`/`gri` put their results in the quickfix
+-- list.
+vim.keymap.set("n", "<leader><CR>", function() require("occurrences").toggle() end,
+  { desc = "Highlight occurrences under cursor (again to dismiss)" })
+
 -- One key to dismiss every "highlight" in the buffer: search matches and the
 -- occurrence highlight from <leader><CR>.
 vim.keymap.set("n", "<Esc>", function()
   vim.cmd("nohlsearch")
-  pcall(vim.lsp.buf.clear_references)
-  pcall(vim.cmd, "silent! SatelliteRefresh")
+  require("occurrences").clear()
 end, { desc = "Clear search and occurrence highlights" })
 vim.keymap.set("n", "<leader>w", "<cmd>write<CR>", { desc = "Write" })
 vim.keymap.set("t", "<Esc><Esc>", "<C-\\><C-n>", { desc = "Exit terminal mode" })
