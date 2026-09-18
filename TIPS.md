@@ -58,7 +58,17 @@ current window the full-width bottom one again.
 |---|---|
 | `:terminal` | Shell in the current window; `:bo sp \| te` for a bottom strip |
 | `<C-\><C-n>` | Leave terminal insert mode |
+| `gf` / ctrl-click | In a terminal: open the file path under the cursor, at that line |
 | `:file <name>` | Name a terminal or scratch buffer so `:ls` shows something useful |
+
+Run `rg something` in a terminal split, then `gf` or ctrl-click a result to open
+it. Ripgrep's terminal output puts the path on its own line and numbers the
+matches under it, so both halves work: on the path you land at line 1, on a
+`42:  match` line you land at line 42. The file opens in the editor window, not
+over the terminal. Ctrl-click needs no `<C-\><C-n>` first. Paths resolve against
+the shell's own working directory, so `cd src && rg ...` still works; anything
+that will not resolve falls through to the file picker, seeded with the file
+name.
 
 `:file` on a **file** buffer is a rename, not a label — your next `:w` writes
 somewhere new and silently leaves the original alone. See

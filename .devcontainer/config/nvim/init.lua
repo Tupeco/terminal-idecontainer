@@ -722,3 +722,28 @@ vim.keymap.set("n", "<Esc>", function()
 end, { desc = "Clear search and occurrence highlights" })
 vim.keymap.set("n", "<leader>w", "<cmd>write<CR>", { desc = "Write" })
 vim.keymap.set("t", "<Esc><Esc>", "<C-\\><C-n>", { desc = "Exit terminal mode" })
+
+-- ---------------------------------------------------------------------------
+-- Terminal: open the file path under the cursor
+-- ---------------------------------------------------------------------------
+-- `gf` or ctrl-click on a path printed in a terminal window opens that file in
+-- the editor window, at the right line. Built for ripgrep, whose default
+-- terminal output puts the path on its own line and numbers the matches under
+-- it; see lua/termjump.lua for how the two halves are put back together.
+--
+-- Mapped buffer-locally so it only exists inside terminals. Ctrl-click works
+-- straight from Terminal mode without pressing <C-\><C-n> first: when the
+-- program has not enabled mouse reporting, Nvim drops terminal focus and
+-- handles the click as an ordinary buffer event (:help terminal-mouse).
+vim.api.nvim_create_autocmd("TermOpen", {
+  group = vim.api.nvim_create_augroup("term_file_jump", { clear = true }),
+  callback = function(ev)
+    vim.keymap.set("n", "gf", function() require("termjump").jump() end,
+      { buffer = ev.buf, desc = "Open the file path under the cursor" })
+    -- The leading <LeftMouse> is what moves the cursor to what was clicked,
+    -- before the handler reads the position under it.
+    vim.keymap.set("n", "<C-LeftMouse>",
+      "<LeftMouse><cmd>lua require('termjump').jump()<cr>",
+      { buffer = ev.buf, desc = "Open the file path under the cursor (ctrl-click)" })
+  end,
+})
