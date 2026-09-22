@@ -276,10 +276,16 @@ require("lazy").setup({
       dapui.setup()
       require("nvim-dap-virtual-text").setup({})
 
-      -- Python: debugpy lives in its own env so it is always present. If a
+      -- Python: debugpy lives in its own env so it is always present. The
+      -- container bakes it at /opt/debugpy; install-scripts/install.sh puts it
+      -- under Nvim's data dir, per user. First one that exists wins. If a
       -- project needs its own dependencies visible to the debugger, run
       -- `uv pip install debugpy` in that venv and swap the path here.
-      require("dap-python").setup("/opt/debugpy/bin/python")
+      local debugpy = vim.fn.stdpath("data") .. "/debugpy/bin/python"
+      if vim.fn.executable("/opt/debugpy/bin/python") == 1 then
+        debugpy = "/opt/debugpy/bin/python"
+      end
+      require("dap-python").setup(debugpy)
 
       -- Rust via lldb-dap.
       dap.adapters.lldb = {
@@ -586,6 +592,10 @@ require("lazy").setup({
 }, {
   install = { colorscheme = { "tokyonight-night", "habamax" } },
   checker = { enabled = false },
+  -- Out of the config dir, because install-scripts/install.sh -l makes the
+  -- config dir a symlink into the repo: a lock written there would show up as
+  -- an untracked file, and then get baked into the next image build.
+  lockfile = vim.fn.stdpath("data") .. "/lazy-lock.json",
 })
 
 -- ---------------------------------------------------------------------------

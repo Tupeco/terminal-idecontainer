@@ -27,9 +27,14 @@ template](#using-this-as-a-template).
     evil-helix/config.toml  evil-helix settings; read only by `ehx`
     nvim/init.lua           Neovim config
     nvim/lua/devtips.lua    renders TIPS.md as `:Tips` and the startup screen
+    nvim/lua/occurrences.lua  <leader><CR> occurrence highlighting
+    nvim/lua/termjump.lua   gf / ctrl-click on paths in terminal buffers
     bin/hx, bin/ehx         wrappers that pin each editor to its own runtime
     tmux.conf               OSC 52 passthrough, sane defaults
     bashrc.extra            PATH, history persistence, `work` helper
+install-scripts/
+  install.sh            the same Neovim setup on a plain Ubuntu machine,
+                        without the container; see below
 mount/                  bind-mounted at /mount inside; gitignored
 dev                     lifecycle wrapper script
 TIPS.md                 how to drive the tools once you are inside; also
@@ -342,6 +347,45 @@ bind mount for the config directory in `docker-compose.yml`:
       - ./config/evil-helix:/home/dev/.config/evil-helix
       - ./config/nvim:/home/dev/.config/nvim
 ```
+
+## Without the container: install-scripts/
+
+For a dedicated machine or VM used as a remote IDE — SSH in, `tmux`, `nvim`,
+with Claude Code running on the box itself — `install-scripts/install.sh`
+installs the same Neovim setup directly, for the user who runs it. Ubuntu
+22.04, 24.04 and 26.04, amd64 or arm64.
+
+```
+install-scripts/install.sh -l    # symlink the config to this checkout
+install-scripts/install.sh -c    # copy it instead; the checkout can go
+```
+
+With neither flag it prints its help and does nothing. `-l` is the one to
+use if you keep the repo on the box: a `git pull` updates the editor, and
+the container and the machine can never disagree about the config.
+
+It is the container's recipe, not a second one. The pinned versions and the
+treesitter parser list are read out of the Dockerfile at run time, and the
+config files are the ones in `.devcontainer/config`. What differs is where
+things go: apt for system packages (through sudo when not root), everything
+else under the user's home — Neovim in `~/.local/opt`, binaries in
+`~/.local/bin`, Rust through rustup in `~/.cargo`, Python tooling through
+uv, and a marked PATH block in `~/.profile` and `~/.bashrc`. Re-running
+updates in place, and anything it replaces in `~/.config/nvim` or
+`~/.tmux.conf` is kept as `<name>.bak-<timestamp>`.
+
+Per-release differences it handles itself:
+
+- **22.04**: the tree-sitter CLI release binaries need glibc 2.39, so it is
+  built with cargo instead (a few minutes, once). fzf is too old for fzf-lua
+  and git-delta is not packaged, so both come from upstream releases. The
+  debug adapter is still called `lldb-vscode` there; it is linked in as
+  `lldb-dap`, the name `init.lua` uses.
+- **24.04, 26.04**: everything that apt has is taken from apt.
+
+Running it with `sudo` from your own account installs for root, not for you
+— it says so when that happens. Run it as the account you will work as; it
+elevates for apt on its own.
 
 ## Known caveats
 

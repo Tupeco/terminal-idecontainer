@@ -8,8 +8,14 @@
 local M = {}
 
 local function tips_path()
+  -- In order: the container's bind mount (or install.sh -c's copy); the repo
+  -- root, reached through the symlink install.sh -l makes -- ~/.config/nvim
+  -- resolves to <repo>/.devcontainer/config/nvim, three levels down; and an
+  -- explicit override.
+  local config = vim.fn.stdpath("config")
   for _, p in ipairs({
-    vim.fn.stdpath("config") .. "/TIPS.md",
+    config .. "/TIPS.md",
+    vim.fn.fnamemodify(vim.fn.resolve(config), ":h:h:h") .. "/TIPS.md",
     vim.env.DEVCONTAINER_TIPS or "",
   }) do
     if p ~= "" and vim.fn.filereadable(p) == 1 then return p end
