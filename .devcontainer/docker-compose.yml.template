@@ -37,6 +37,15 @@ services:
       # macOS Docker Desktop exposes the host SSH agent at this fixed path.
       SSH_AUTH_SOCK: /ssh-agent
 
+    # Orca's headless server, when you start it with `./dev orca`. Published on
+    # every interface on purpose: the address a remote client pairs with is the
+    # *host's* -- its Tailscale address, say -- and the host forwards to here,
+    # so Tailscale never has to run inside the container. Pairing needs a token
+    # either way, but if you would rather not have the port on your LAN at all,
+    # narrow this to "127.0.0.1:6768:6768" and put `tailscale serve` in front.
+    ports:
+      - "6768:6768"
+
     volumes:
       # Source lives in a named volume, not a bind mount. On macOS this avoids
       # virtiofs, which is what makes LSP indexing crawl when the editor runs
@@ -46,6 +55,12 @@ services:
       # Caches worth keeping across rebuilds.
       - cargo-registry:/usr/local/cargo/registry
       - uv-cache:/home/dev/.cache/uv
+
+      # Orca's runtime state: orchestration.db, the per-client pairing tokens
+      # and the end-to-end encryption keys. Without these, every rebuild means
+      # re-pairing every client -- the same trap as ~/.claude below.
+      - orca-config:/home/dev/.config/orca
+      - orca-state:/home/dev/.orca
       - nvim-state:/home/dev/.local/state/nvim
 
       # Claude Code credentials and chat history, so you authenticate once
@@ -93,6 +108,8 @@ volumes:
   workspace:
   cargo-registry:
   uv-cache:
+  orca-config:
+  orca-state:
   nvim-state:
   claude-config:
   git-config:

@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+# Orca's headless server, inside this container.
+#
+#   orca-server start [pairing-address]   start it, detached
+#   orca-server stop
+#   orca-server status
+#   orca-server url                       print the pairing URL again
+#   orca-server log                       follow the log
+#
+# Orca is an IDE for running several coding agents side by side; `serve` is the
+# mode where this container owns the projects, worktrees, terminals and agent
+# processes, and Orca on your Mac (or phone) is only the UI. The state that
+# makes a pairing survive a rebuild lives in ~/.config/orca and ~/.orca, both
+# of which are volumes.
+#
+# Two things worth knowing about running it here:
+#
+#   * `serve` needs no display. Measured: with DISPLAY unset it still answers
+#     on its HTTP port. It runs under Xvfb anyway, as upstream's own systemd
+#     unit does, because the browser and Design Mode features do want one.
+#     Xvfb is already installed -- the orca-ide package depends on it.
+#
+#   * Electron refuses to start as root without --no-sandbox, which is why
+#     this container's `dev` user is the right one to run it as. If you find
+#     yourself running this as root, that is the error you will get.
+set -euo pipefail
+
+PORT="${ORCA_PORT:-6768}"
+SESSION=orca
+LOG="${XDG_STATE_HOME:-$HOME/.local/state}/orca-server.log"
+
+die() { printf 'error: %s\n' "$*" >&2; exit 1; }
+
+running() { tmux has-session -t "$SESSION" 2>/dev/null; }
+
+usage() {
+  sed -n '2,/^set -euo/p' "$0" | sed 's/^# \{0,1\}//; $d'
+}
+
+cmd_start() {
+  local addr="${1:-}"
+  if running; then
+    echo "Orca server is already running (tmux session '$SESSION')"
+    cmd_url || true
+    return 0
+  fi
+
+  command -v orca-ide >/dev/null || die "orca-ide is not installed in this image"
+  if [ "$(id -u)" -eq 0 ]; then
+    die "run this as an unprivileged user: Electron will not start as root without --no-sandbox"
+  fi
+
+  local args=(serve --port "$PORT")
+  [ -n "$addr" ] && args+=(--pairing-address "$addr")
+
+  mkdir -p "$(dirname "$LOG")"
+  : > "$LOG"
+
+  # tmux rather than a bare background process so you can attach and watch it,
+  # and so it outlives the shell that started it -- the same reason the editor
+  # runs in tmux here.
+  tmux new-session -d -s "$SESSION" \
+    "exec env LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a orca-ide ${args[*]} 2>&1 | tee -a '$LOG'"
+
+  # The pairing URL is what you paste into the client, so wait for it rather
+  # than returning a prompt and leaving you to go looking.
+  for _ in $(seq 60); do
+    if grep -q '^Pairing URL:' "$LOG" 2>/dev/null; then
+      echo "Orca server listening on port $PORT (tmux session '$SESSION')"
+      cmd_url
+      return 0
+    fi
+    running || { echo "--- log ---"; cat "$LOG"; die "the server exited; see above"; }
+    sleep 1
+  done
+  echo "--- log so far ---"
+  cat "$LOG"
+  die "no pairing URL after 60s"
+}
+
+cmd_stop() {
+  running || { echo "not running"; return 0; }
+  tmux kill-session -t "$SESSION"
+  echo "stopped"
+}
+
+cmd_status() {
+  if running; then
+    echo "running (tmux session '$SESSION'), port $PORT"
+  else
+    echo "not running"
+    return 1
+  fi
+}
+
+cmd_url() {
+  [ -f "$LOG" ] || die "no log at $LOG; has it been started?"
+  local url
+  url="$(sed -n 's/^Pairing URL: //p' "$LOG" | tail -n1)"
+  [ -n "$url" ] || die "no pairing URL in $LOG yet"
+  printf '\nPairing URL (treat it like a password):\n\n  %s\n\n' "$url"
+  sed -n 's/^Advertised endpoint: /Advertised endpoint: /p' "$LOG" | tail -n1
+}
+
+cmd_log() {
+  [ -f "$LOG" ] || die "no log at $LOG; has it been started?"
+  tail -n 40 -f "$LOG"
+}
+
+case "${1:-}" in
+  start) shift; cmd_start "${1:-}" ;;
+  stop) cmd_stop ;;
+  status) cmd_status ;;
+  url) cmd_url ;;
+  log) cmd_log ;;
+  -h | --help | help | "") usage ;;
+  *) usage >&2; exit 2 ;;
+esac

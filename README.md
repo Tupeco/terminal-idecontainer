@@ -348,6 +348,54 @@ bind mount for the config directory in `docker-compose.yml`:
       - ./config/nvim:/home/dev/.config/nvim
 ```
 
+## Orca server (beta)
+
+[Orca](https://www.onorca.dev) is an IDE for running a fleet of coding agents
+side by side. It has a headless mode, and that is what is installed here: the
+container owns the projects, worktrees, terminals and agent processes, and Orca
+on your Mac — or the phone app — is only the UI.
+
+```
+./dev orca                 # start it, print the pairing URL
+./dev orca 100.64.1.20     # ...advertising an address a remote client can dial
+./dev orca-log             # follow its log
+./dev orca-stop
+```
+
+Then in Orca on the client: Settings → Remote Orca Servers → Add Server, and
+paste the URL. Treat that URL like a password; each client gets its own
+revocable token.
+
+**Which address to pass.** Port 6768 is published by the container, so the
+client connects to the *host*, not to the container. With no argument the
+server advertises `127.0.0.1:6768`, which is exactly right when the client is
+this same Mac. For a client elsewhere, pass the address that client should dial
+— this machine's Tailscale address or hostname. Tailscale runs on the host, not
+inside the container, so nothing here needs `NET_ADMIN` or a TUN device.
+
+**If you rendered docker-compose.yml before this existed**, it has neither the
+published port nor the state volumes. `./dev setup <name> --force` re-renders
+it and carries your `mount` entries across.
+
+Pairings, agent-session keys and the orchestration database live in
+`~/.config/orca` and `~/.orca`, both on named volumes, so a `./dev rebuild`
+does not cost you a re-pairing. `ORCA_VERSION` in the Dockerfile pins the
+version; Orca self-updates in place, and a rebuild puts it back on the pin.
+
+Two things measured rather than assumed, since neither is obvious from the
+upstream docs:
+
+- **`serve` needs no display.** With `DISPLAY` unset it still answers on its
+  HTTP port. It is run under Xvfb anyway, as upstream's own systemd unit does,
+  because the browser and Design Mode features do want one.
+- **Electron will not start as root** without `--no-sandbox`
+  (`FATAL: Running as root without --no-sandbox is not supported`). In here it
+  runs as `dev`, so this never comes up — but it is why Orca's own documented
+  service creates a dedicated user, and why `orca-server` refuses to start if
+  you are root.
+
+Orca is beta software and phones home to PostHog for telemetry.
+
 ## Without the container: install-scripts/
 
 For a dedicated machine or VM used as a remote IDE — SSH in, `tmux`, `nvim`,

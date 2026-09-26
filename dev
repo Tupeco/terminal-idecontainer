@@ -45,6 +45,17 @@ Day to day:
   rebuild   Rebuild the image from scratch, keeping all volumes
   nuke      Remove the container AND all volumes, including your source
 
+Orca server (an IDE for a fleet of agents; this container runs the runtime,
+your Mac or phone runs the UI):
+
+  orca [address]
+            Start it and print the pairing URL. With no address it advertises
+            127.0.0.1, which is what a client on this same Mac needs. For a
+            client elsewhere, pass the address it should dial -- this host's
+            Tailscale address or hostname, not the container's.
+  orca-stop Stop it
+  orca-log  Follow its log
+
 Sharing directories with the host:
 
   <repo>/mount is always bind-mounted at /mount inside the container.
@@ -213,6 +224,23 @@ case "${1:-}" in
     [ $# -ge 2 ] || die "usage: ./dev clone <git-url>"
     cd "$DCDIR"
     "${COMPOSE[@]}" exec "$SERVICE" bash -lc "cd ~/src && git clone '$2'"
+    ;;
+  orca)
+    require_setup
+    cd "$DCDIR"
+    # Port 6768 is published by docker-compose.yml; `setup --force` adds it to
+    # an older rendering.
+    "${COMPOSE[@]}" exec "$SERVICE" bash -lc "orca-server start ${2:-}"
+    ;;
+  orca-stop)
+    require_setup
+    cd "$DCDIR"
+    "${COMPOSE[@]}" exec "$SERVICE" bash -lc 'orca-server stop'
+    ;;
+  orca-log)
+    require_setup
+    cd "$DCDIR"
+    exec "${COMPOSE[@]}" exec "$SERVICE" bash -lc 'orca-server log'
     ;;
   stop)
     require_setup

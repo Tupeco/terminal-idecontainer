@@ -270,7 +270,7 @@ RUN set -eux; \
     tar -xzf /tmp/evil-helix.tar.gz -C /opt/evil-helix --strip-components=1; \
     rm /tmp/evil-helix.tar.gz
 
-COPY --chmod=0755 config/bin/hx config/bin/ehx /usr/local/bin/
+COPY --chmod=0755 config/bin/hx config/bin/ehx config/bin/orca-server /usr/local/bin/
 
 RUN set -eux; \
     hx --version; \
@@ -298,6 +298,43 @@ RUN set -eux; \
     ln -sf /opt/nvim/bin/nvim /usr/local/bin/nvim; \
     rm /tmp/nvim.tar.gz; \
     nvim --version | head -n1
+
+# ---------------------------------------------------------------------------
+# Orca
+#
+# An IDE for running several coding agents side by side. What earns it a place
+# in a headless image is `orca serve`: the container owns the projects,
+# worktrees, terminals and agent processes, and Orca on the Mac (or the phone
+# app) is only the UI. `./dev orca` starts it; the README has the pairing
+# steps, and `orca-server` is the wrapper it calls.
+#
+# The .deb rather than the AppImage, deliberately: it declares its runtime
+# dependencies (gtk, nss, at-spi, xvfb and a dozen more) so apt resolves them,
+# while the AppImage needs libfuse2 and a FUSE device this container does not
+# have. Upstream names the Linux binary `orca-ide` so it does not collide with
+# the GNOME Orca screen reader.
+#
+# Pinned like every other tool here, though Orca also updates itself: a rebuild
+# puts the image back on this version, so bump the ARG rather than fight it.
+#
+# Note `serve` runs as ${USERNAME}, not root -- Electron refuses to start as
+# root without --no-sandbox. `orca-ide --version` below is answered before
+# Electron starts, so it works as a build-time check.
+# ---------------------------------------------------------------------------
+ARG ORCA_VERSION=1.4.212
+RUN set -eux; \
+    case "$(dpkg --print-architecture)" in \
+        amd64) orcaarch=amd64 ;; \
+        arm64) orcaarch=arm64 ;; \
+        *) echo "unsupported architecture" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL -o /tmp/orca.deb \
+        "https://github.com/stablyai/orca/releases/download/v${ORCA_VERSION}/orca-ide_${ORCA_VERSION}_${orcaarch}.deb"; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends /tmp/orca.deb; \
+    rm -f /tmp/orca.deb; \
+    rm -rf /var/lib/apt/lists/*; \
+    orca-ide --version
 
 # ---------------------------------------------------------------------------
 # User-level configuration
