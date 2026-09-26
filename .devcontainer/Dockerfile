@@ -320,6 +320,16 @@ RUN set -eux; \
 # Note `serve` runs as ${USERNAME}, not root -- Electron refuses to start as
 # root without --no-sandbox. `orca-ide --version` below is answered before
 # Electron starts, so it works as a build-time check.
+#
+# ALSA is installed by hand because the .deb's Depends list leaves it out even
+# though the Electron binary links against it; without it orca-ide dies with
+# "libasound.so.2: cannot open shared object file". The package was renamed by
+# the 64-bit time_t transition (libasound2 -> libasound2t64), and on 26.04 the
+# old name survives only as a virtual package with two providers, which apt
+# refuses to resolve -- so pick whichever name this release really has rather
+# than hardcoding either. Verified in a clean 26.04 root: with it, and with the
+# .deb's own dependencies, nothing else is missing and `serve` answers on its
+# port.
 # ---------------------------------------------------------------------------
 ARG ORCA_VERSION=1.4.212
 RUN set -eux; \
@@ -331,7 +341,9 @@ RUN set -eux; \
     curl -fsSL -o /tmp/orca.deb \
         "https://github.com/stablyai/orca/releases/download/v${ORCA_VERSION}/orca-ide_${ORCA_VERSION}_${orcaarch}.deb"; \
     apt-get update; \
-    apt-get install -y --no-install-recommends /tmp/orca.deb; \
+    alsa=libasound2t64; \
+    apt-cache show libasound2t64 >/dev/null 2>&1 || alsa=libasound2; \
+    apt-get install -y --no-install-recommends "$alsa" /tmp/orca.deb; \
     rm -f /tmp/orca.deb; \
     rm -rf /var/lib/apt/lists/*; \
     orca-ide --version
