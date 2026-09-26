@@ -356,8 +356,8 @@ container owns the projects, worktrees, terminals and agent processes, and Orca
 on your Mac — or the phone app — is only the UI.
 
 ```
-./dev orca                 # start it, print the pairing URL
-./dev orca 100.64.1.20     # ...advertising an address a remote client can dial
+./dev orca                 # start it, advertising this machine's address
+./dev orca 100.64.1.20     # ...or an address you name yourself
 ./dev orca-log             # follow its log
 ./dev orca-stop
 ```
@@ -366,12 +366,33 @@ Then in Orca on the client: Settings → Remote Orca Servers → Add Server, and
 paste the URL. Treat that URL like a password; each client gets its own
 revocable token.
 
-**Which address to pass.** Port 6768 is published by the container, so the
-client connects to the *host*, not to the container. With no argument the
-server advertises `127.0.0.1:6768`, which is exactly right when the client is
-this same Mac. For a client elsewhere, pass the address that client should dial
-— this machine's Tailscale address or hostname. Tailscale runs on the host, not
-inside the container, so nothing here needs `NET_ADMIN` or a TUN device.
+**Which address, and why not localhost.** Port 6768 is published, so a client
+connects to *this machine* and Docker forwards inward. With no argument
+`./dev orca` advertises this machine's Tailscale address, or its LAN address if
+Tailscale is not running, and prints which it chose; pass one to override.
+
+`127.0.0.1` does not work here, even when the client is this same Mac, and the
+reason is worth knowing: a connection through a published port arrives at the
+container from Docker's gateway, never from loopback. So a pairing that claims
+`ws://127.0.0.1:6768` is contradicted by the connection the server actually
+gets. The desktop app rejects such a code outright ("the host is not the one
+that the code is for"); the browser client gets further — `e2ee_hello` and
+`e2ee_ready` both succeed — and then stalls with the `e2ee_auth` frame
+unanswered. Upstream's own docs say the same thing more briefly: "Do not select
+`127.0.0.1` for another computer. That address only works on the server
+itself."
+
+Tailscale runs on this machine, not inside the container, so nothing here needs
+`NET_ADMIN` or a TUN device.
+
+**If a routable address still stalls**, `./dev orca-log` while the client
+connects is the place to look, and these two open upstream issues are the
+likely suspects: a heartbeat sweep that closes the socket before the handshake
+finishes ([#12140](https://github.com/stablyai/orca/issues/12140), which also
+suspects a loopback-only allowlist on the WebSocket upgrade), and the browser
+client being undocumented and unsupported as a standalone target
+([#10687](https://github.com/stablyai/orca/issues/10687)). The desktop app is
+the better-trodden path of the two.
 
 **If you rendered docker-compose.yml before this existed**, it has neither the
 published port nor the state volumes. `./dev setup <name> --force` re-renders

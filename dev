@@ -50,9 +50,10 @@ your Mac or phone runs the UI):
 
   orca [address]
             Start it and print the pairing URL. With no address it advertises
-            127.0.0.1, which is what a client on this same Mac needs. For a
-            client elsewhere, pass the address it should dial -- this host's
-            Tailscale address or hostname, not the container's.
+            this machine's Tailscale address, or its LAN address if Tailscale
+            is not running. Pass one to override. Not the container's address,
+            and not 127.0.0.1: clients dial this machine, and Docker forwards
+            the published port inward.
   orca-stop Stop it
   orca-log  Follow its log
 
@@ -75,6 +76,32 @@ require_setup() {
 }
 
 # The lines currently between the two markers, if any.
+# The address a client dials to reach the Orca server, which is *this*
+# machine's: port 6768 is published, so clients connect here and Docker
+# forwards into the container. Loopback is deliberately not a fallback -- the
+# server rejects a pairing whose advertised host does not match the connection
+# it actually gets, and through a published port nothing arrives on loopback.
+host_address() {
+  local ip="" ts iface
+  for ts in tailscale /Applications/Tailscale.app/Contents/MacOS/Tailscale; do
+    if command -v "$ts" >/dev/null 2>&1; then
+      ip="$("$ts" ip -4 2>/dev/null | head -n1 || true)"
+      [ -n "$ip" ] && { printf '%s\n' "$ip"; return 0; }
+    fi
+  done
+  # macOS: the address of whichever interface carries the default route.
+  iface="$(route -n get default 2>/dev/null | awk '/interface:/ { print $2 }')"
+  if [ -n "$iface" ]; then
+    ip="$(ipconfig getifaddr "$iface" 2>/dev/null || true)"
+    [ -n "$ip" ] && { printf '%s\n' "$ip"; return 0; }
+  fi
+  # Linux, for the same script on a non-Mac host.
+  ip="$(ip -4 route get 1.1.1.1 2>/dev/null \
+        | awk '{ for (i = 1; i <= NF; i++) if ($i == "src") print $(i + 1) }')"
+  [ -n "$ip" ] && { printf '%s\n' "$ip"; return 0; }
+  return 1
+}
+
 extra_mounts() {
   awk -v b="$MARK_BEGIN" -v e="$MARK_END" '
     index($0, e) { f = 0 }
@@ -227,10 +254,18 @@ case "${1:-}" in
     ;;
   orca)
     require_setup
+    addr="${2:-}"
+    if [ -z "$addr" ]; then
+      addr="$(host_address || true)"
+      [ -n "$addr" ] \
+        || die "could not work out this machine's address; pass one: ./dev orca <address>"
+      echo "Advertising $addr, this machine's Tailscale or LAN address."
+      echo "Pass an address explicitly to override it."
+    fi
     cd "$DCDIR"
     # Port 6768 is published by docker-compose.yml; `setup --force` adds it to
     # an older rendering.
-    "${COMPOSE[@]}" exec "$SERVICE" bash -lc "orca-server start ${2:-}"
+    "${COMPOSE[@]}" exec "$SERVICE" bash -lc "orca-server start '$addr'"
     ;;
   orca-stop)
     require_setup
