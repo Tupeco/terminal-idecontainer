@@ -23,6 +23,27 @@
 #   * Electron refuses to start as root without --no-sandbox, which is why
 #     this container's `dev` user is the right one to run it as. If you find
 #     yourself running this as root, that is the error you will get.
+#
+#   * ELECTRON_DISABLE_SANDBOX=1 is required in a container. Chromium's zygote
+#     sandboxes itself by creating a user namespace, and Docker's default
+#     seccomp profile refuses that syscall:
+#
+#       Failed to move to new namespace: PID namespaces supported,
+#       Network namespace supported, but failed: errno = Operation not permitted
+#       FATAL:zygote_host_impl_linux.cc Check failed
+#
+#     The variable rather than the flag because `orca serve` rejects unknown
+#     flags outright ("Unknown flag --no-sandbox for command: serve"); Electron
+#     reads the variable before Orca parses anything and passes --no-sandbox
+#     down to the zygotes itself. Verified: with it set, the zygote processes
+#     carry the switch and the server comes up.
+#
+#     This gives up a layer of defence in depth *inside* a container that is
+#     itself the boundary -- and one already holding your source, your agents
+#     and your credentials. The alternative is to hand the container
+#     `seccomp=unconfined` or CAP_SYS_ADMIN so Chromium can build its own
+#     sandbox, which weakens the outer boundary to strengthen an inner one.
+#     Not obviously a good trade for a single-user dev container.
 set -euo pipefail
 
 PORT="${ORCA_PORT:-6768}"
@@ -60,7 +81,8 @@ cmd_start() {
   # and so it outlives the shell that started it -- the same reason the editor
   # runs in tmux here.
   tmux new-session -d -s "$SESSION" \
-    "exec env LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a orca-ide ${args[*]} 2>&1 | tee -a '$LOG'"
+    "exec env LIBGL_ALWAYS_SOFTWARE=1 ELECTRON_DISABLE_SANDBOX=1 \
+       xvfb-run -a orca-ide ${args[*]} 2>&1 | tee -a '$LOG'"
 
   # The pairing URL is what you paste into the client, so wait for it rather
   # than returning a prompt and leaving you to go looking.

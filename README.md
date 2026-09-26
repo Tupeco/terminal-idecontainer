@@ -382,12 +382,24 @@ Pairings, agent-session keys and the orchestration database live in
 does not cost you a re-pairing. `ORCA_VERSION` in the Dockerfile pins the
 version; Orca self-updates in place, and a rebuild puts it back on the pin.
 
-Two things measured rather than assumed, since neither is obvious from the
+Three things measured rather than assumed, since none is obvious from the
 upstream docs:
 
 - **`serve` needs no display.** With `DISPLAY` unset it still answers on its
   HTTP port. It is run under Xvfb anyway, as upstream's own systemd unit does,
   because the browser and Design Mode features do want one.
+- **Chromium's sandbox has to be off in a container.** Its zygote sandboxes
+  itself by creating a user namespace, which Docker's default seccomp profile
+  refuses (`Failed to move to new namespace ... Operation not permitted`,
+  then a fatal check in `zygote_host_impl_linux.cc`). `orca-server` sets
+  `ELECTRON_DISABLE_SANDBOX=1`, which Electron reads before Orca parses
+  anything — `orca serve` itself rejects `--no-sandbox` as an unknown flag.
+  This gives up a layer of defence in depth inside a container that is already
+  the boundary, and that already holds your source, agents and credentials;
+  the alternative is granting the container `seccomp=unconfined` or
+  `CAP_SYS_ADMIN`, which weakens the outer boundary to restore an inner one.
+  Also worth knowing: the `.deb` omits ALSA from its dependencies, so the
+  Dockerfile installs it separately.
 - **Electron will not start as root** without `--no-sandbox`
   (`FATAL: Running as root without --no-sandbox is not supported`). In here it
   runs as `dev`, so this never comes up — but it is why Orca's own documented
