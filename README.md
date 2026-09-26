@@ -366,14 +366,22 @@ Then in Orca on the client: Settings → Remote Orca Servers → Add Server, and
 paste the URL. Treat that URL like a password; each client gets its own
 revocable token.
 
-**Which address, and why not localhost.** Port 6768 is published, so a client
-connects to *this machine* and Docker forwards inward. With no argument
-`./dev orca` advertises this machine's Tailscale address, or its LAN address if
-Tailscale is not running, and prints which it chose; pass one to override.
+**Which address, and which port.** The container's 6768 is published on this
+machine as **16768**, and `./dev orca` advertises `<this machine>:16768` — its
+Tailscale address if Tailscale is running, otherwise its LAN address, printed
+before it starts. Pass an address (optionally `host:port`) to override.
 
-`127.0.0.1` does not work here, even when the client is this same Mac, and the
-reason is worth knowing: a connection through a published port arrives at the
-container from Docker's gateway, never from loopback. So a pairing that claims
+The host port is not 6768 because **Orca's desktop app listens on 6768 itself**.
+Advertise this machine on 6768 and the client dials the desktop app rather than
+the container: the client says "the host is not the one that the code is for"
+and the desktop app reports an unpaired device trying to connect, both at the
+same moment. On the Mac, `lsof -nP -iTCP:6768 -sTCP:LISTEN` shows who holds it.
+The container keeps 6768 internally — `orca serve` honours a `host:port`
+pairing address, so only the advertised number changes.
+
+`127.0.0.1` does not work either, even when the client is this same Mac, and
+the reason is worth knowing: a connection through a published port arrives at
+the container from Docker's gateway, never from loopback. So a pairing that claims
 `ws://127.0.0.1:6768` is contradicted by the connection the server actually
 gets. The desktop app rejects such a code outright ("the host is not the one
 that the code is for"); the browser client gets further — `e2ee_hello` and

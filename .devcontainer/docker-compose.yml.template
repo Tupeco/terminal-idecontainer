@@ -42,9 +42,16 @@ services:
     # *host's* -- its Tailscale address, say -- and the host forwards to here,
     # so Tailscale never has to run inside the container. Pairing needs a token
     # either way, but if you would rather not have the port on your LAN at all,
-    # narrow this to "127.0.0.1:6768:6768" and put `tailscale serve` in front.
+    # narrow this to "127.0.0.1:16768:6768" and put `tailscale serve` in front.
+    #
+    # Host 16768, container 6768, and the difference matters: Orca's desktop app
+    # listens on 6768 itself, so a client dialling this machine on 6768 reaches
+    # that app instead of this container. It shows up as "the host is not the
+    # one that the code is for" on the client, with the desktop app reporting an
+    # unpaired device at the same moment. `./dev orca` reads the host side of
+    # this mapping and advertises it, so changing the number here is enough.
     ports:
-      - "6768:6768"
+      - "16768:6768"
 
     volumes:
       # Source lives in a named volume, not a bind mount. On macOS this avoids

@@ -102,6 +102,16 @@ host_address() {
   return 1
 }
 
+# The host side of the published mapping for the container's 6768, read from
+# the rendered compose file so the two cannot drift apart. Not 6768 itself:
+# Orca's desktop app listens there. See docker-compose.yml.template.
+orca_host_port() {
+  local p
+  p="$(awk -F'"' '/^[[:space:]]*-[[:space:]]*"[0-9.:]+:6768"[[:space:]]*$/ {
+         n = split($2, a, ":"); print a[n - 1]; exit }' "$COMPOSE_FILE" 2>/dev/null)"
+  printf '%s\n' "${p:-6768}"
+}
+
 extra_mounts() {
   awk -v b="$MARK_BEGIN" -v e="$MARK_END" '
     index($0, e) { f = 0 }
@@ -259,12 +269,20 @@ case "${1:-}" in
       addr="$(host_address || true)"
       [ -n "$addr" ] \
         || die "could not work out this machine's address; pass one: ./dev orca <address>"
-      echo "Advertising $addr, this machine's Tailscale or LAN address."
+      echo "Using $addr, this machine's Tailscale or LAN address."
       echo "Pass an address explicitly to override it."
     fi
+    # An address without a port gets the published one. `orca serve` honours a
+    # host:port pairing address, so the container keeps its own 6768 and only
+    # the advertised number changes.
+    case "$addr" in
+      *:*) ;;
+      *) addr="$addr:$(orca_host_port)" ;;
+    esac
+    echo "Advertising ws://$addr"
     cd "$DCDIR"
-    # Port 6768 is published by docker-compose.yml; `setup --force` adds it to
-    # an older rendering.
+    # The mapping lives in docker-compose.yml; `setup --force` adds it to an
+    # older rendering.
     "${COMPOSE[@]}" exec "$SERVICE" bash -lc "orca-server start '$addr'"
     ;;
   orca-stop)
