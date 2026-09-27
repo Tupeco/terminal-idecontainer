@@ -50,7 +50,13 @@ PORT="${ORCA_PORT:-6768}"
 SESSION=orca
 LOG="${XDG_STATE_HOME:-$HOME/.local/state}/orca-server.log"
 
-die() { printf 'error: %s\n' "$*" >&2; exit 1; }
+die()  { printf 'error: %s\n' "$*" >&2; exit 1; }
+warn() { printf 'warning: %s\n' "$*" >&2; }
+
+# host:port of what the running server advertises, from its log.
+advertised() {
+  sed -n 's|^Advertised endpoint: ws://||p' "$LOG" 2>/dev/null | tail -n1
+}
 
 running() { tmux has-session -t "$SESSION" 2>/dev/null; }
 
@@ -61,6 +67,24 @@ usage() {
 cmd_start() {
   local addr="${1:-}"
   if running; then
+    # Asking for a different address than the running server advertises is a
+    # request it cannot satisfy: the address is baked into the pairing code at
+    # startup. Printing the old code here would contradict whatever the caller
+    # just said it was advertising, so refuse instead. Not an automatic restart:
+    # that would drop any client sessions attached to the server.
+    local current want
+    current="$(advertised)"
+    want="${addr:-$current}"
+    case "$want" in
+      *:*) ;;
+      *) want="$want:${current##*:}" ;;
+    esac
+    if [ -n "$current" ] && [ "$want" != "$current" ]; then
+      printf 'error: already running, advertising %s -- you asked for %s.\n' "$current" "$want" >&2
+      printf '  Stop it first, then start it again with the address you want:\n' >&2
+      printf '    ./dev orca-stop && ./dev orca %s\n' "$addr" >&2
+      exit 1
+    fi
     echo "Orca server is already running (tmux session '$SESSION')"
     cmd_url || true
     return 0
@@ -89,6 +113,18 @@ cmd_start() {
       exit 1
     fi
   done
+
+  # An address belonging to this container is not reachable from anywhere else:
+  # clients dial the *host*, which forwards the published port inward.
+  if [ -n "$addr" ]; then
+    local own
+    for own in $(hostname -I 2>/dev/null); do
+      if [ "$own" = "${addr%:*}" ] || [ "$own" = "$addr" ]; then
+        warn "${addr%:*} is this container's own address on the Docker network."
+        warn "Clients cannot route to it -- use the host machine's address instead."
+      fi
+    done
+  fi
 
   local args=(serve --port "$PORT")
   [ -n "$addr" ] && args+=(--pairing-address "$addr")

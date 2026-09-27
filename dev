@@ -81,24 +81,30 @@ require_setup() {
 # forwards into the container. Loopback is deliberately not a fallback -- the
 # server rejects a pairing whose advertised host does not match the connection
 # it actually gets, and through a published port nothing arrives on loopback.
+# Prints "<address> <where it came from>".
 host_address() {
   local ip="" ts iface
   for ts in tailscale /Applications/Tailscale.app/Contents/MacOS/Tailscale; do
     if command -v "$ts" >/dev/null 2>&1; then
-      ip="$("$ts" ip -4 2>/dev/null | head -n1 || true)"
-      [ -n "$ip" ] && { printf '%s\n' "$ip"; return 0; }
+      # `tailscale ip` answers with the last address it was assigned even when
+      # the daemon is stopped or logged out, so ask whether it is up first --
+      # otherwise this hands out a tailnet address that routes nowhere.
+      if "$ts" status >/dev/null 2>&1; then
+        ip="$("$ts" ip -4 2>/dev/null | head -n1 || true)"
+        [ -n "$ip" ] && { printf '%s tailscale\n' "$ip"; return 0; }
+      fi
     fi
   done
   # macOS: the address of whichever interface carries the default route.
   iface="$(route -n get default 2>/dev/null | awk '/interface:/ { print $2 }')"
   if [ -n "$iface" ]; then
     ip="$(ipconfig getifaddr "$iface" 2>/dev/null || true)"
-    [ -n "$ip" ] && { printf '%s\n' "$ip"; return 0; }
+    [ -n "$ip" ] && { printf '%s LAN (%s)\n' "$ip" "$iface"; return 0; }
   fi
   # Linux, for the same script on a non-Mac host.
   ip="$(ip -4 route get 1.1.1.1 2>/dev/null \
         | awk '{ for (i = 1; i <= NF; i++) if ($i == "src") print $(i + 1) }')"
-  [ -n "$ip" ] && { printf '%s\n' "$ip"; return 0; }
+  [ -n "$ip" ] && { printf '%s LAN\n' "$ip"; return 0; }
   return 1
 }
 
@@ -266,11 +272,11 @@ case "${1:-}" in
     require_setup
     addr="${2:-}"
     if [ -z "$addr" ]; then
-      addr="$(host_address || true)"
-      [ -n "$addr" ] \
+      found="$(host_address || true)"
+      [ -n "$found" ] \
         || die "could not work out this machine's address; pass one: ./dev orca <address>"
-      echo "Using $addr, this machine's Tailscale or LAN address."
-      echo "Pass an address explicitly to override it."
+      addr="${found%% *}"
+      echo "Using $addr, this machine's ${found#* } address. Pass one to override."
     fi
     # An address without a port gets the published one. `orca serve` honours a
     # host:port pairing address, so the container keeps its own 6768 and only

@@ -368,8 +368,18 @@ revocable token.
 
 **Which address, and which port.** The container's 6768 is published on this
 machine as **16768**, and `./dev orca` advertises `<this machine>:16768` — its
-Tailscale address if Tailscale is running, otherwise its LAN address, printed
-before it starts. Pass an address (optionally `host:port`) to override.
+Tailscale address if Tailscale is actually up, otherwise its LAN address,
+saying which before it starts. Pass an address (optionally `host:port`) to
+override. `tailscale ip` answers with the last address it was assigned even
+when the daemon is stopped, so the detection asks `tailscale status` first; a
+tailnet address while Tailscale is down routes nowhere.
+
+The address must be one clients can reach: the host machine's. The container's
+own Docker-network address (`172.x.y.z`) is not reachable from the host on
+macOS, and `orca-server` warns if you pass one. The address is baked into the
+pairing code when the server starts, so changing it means stopping first —
+`./dev orca <other-address>` on a running server refuses rather than handing
+back the old code, since restarting would drop any attached client sessions.
 
 The host port is not 6768 because **Orca's desktop app listens on 6768 itself**.
 Advertise this machine on 6768 and the client dials the desktop app rather than
