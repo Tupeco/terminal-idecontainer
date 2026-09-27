@@ -71,6 +71,25 @@ cmd_start() {
     die "run this as an unprivileged user: Electron will not start as root without --no-sandbox"
   fi
 
+  # ~/.config/orca and ~/.orca are Docker volumes. If a volume was created
+  # before the image had that directory, Docker owns the mountpoint as root and
+  # Orca cannot write its state -- which Electron reports as "Another Orca
+  # instance is already running for this userData profile", pointing at entirely
+  # the wrong thing. Say what is actually wrong instead.
+  local d
+  for d in "$HOME/.config/orca" "$HOME/.orca"; do
+    mkdir -p "$d" 2>/dev/null || true
+    if [ ! -w "$d" ]; then
+      printf 'error: %s is not writable by %s.\n' "$d" "$(id -un)" >&2
+      printf '  Its Docker volume predates the image creating that directory, so Docker\n' >&2
+      printf '  owns the mountpoint as root. Either drop the two volumes from the host --\n' >&2
+      printf '    docker volume rm <project>_orca-config <project>_orca-state\n' >&2
+      printf '  which only costs you existing pairings -- or, in here:\n' >&2
+      printf '    sudo chown -R %s %s\n' "$(id -un)" "$d" >&2
+      exit 1
+    fi
+  done
+
   local args=(serve --port "$PORT")
   [ -n "$addr" ] && args+=(--pairing-address "$addr")
 

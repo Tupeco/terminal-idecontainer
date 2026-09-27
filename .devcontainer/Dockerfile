@@ -363,11 +363,24 @@ COPY --chown=${USER_UID}:${USER_GID} config/nvim/  .config/nvim/
 COPY --chown=${USER_UID}:${USER_GID} config/tmux.conf .tmux.conf
 COPY --chown=${USER_UID}:${USER_GID} config/bashrc.extra /tmp/bashrc.extra
 
+# Every directory a named volume mounts over is created here, as ${USERNAME},
+# on purpose. Docker seeds a *new* volume from the image path including its
+# ownership -- but where the path does not exist in the image, it creates the
+# mountpoint itself, owned by root, and the unprivileged user cannot write to
+# its own state directory. Orca fails that way especially confusingly: it
+# cannot create .config/orca/SingletonLock, and Electron reports the EACCES as
+# "Another Orca instance is already running for this userData profile".
+#
+# Seeding happens once, when the volume is first created, so a project whose
+# volumes predate this needs `docker volume rm <project>_orca-config
+# <project>_orca-state` (they hold only pairings) as well as a rebuild.
 RUN cat /tmp/bashrc.extra >> "/home/${USERNAME}/.bashrc" \
     && rm /tmp/bashrc.extra \
     && git lfs install --skip-repo \
     && mkdir -p "/home/${USERNAME}/src" \
                 "/home/${USERNAME}/.config/git" \
+                "/home/${USERNAME}/.config/orca" \
+                "/home/${USERNAME}/.orca" \
                 "/home/${USERNAME}/.claude"
 
 # Claude Code splits its state across two locations: OAuth tokens go in

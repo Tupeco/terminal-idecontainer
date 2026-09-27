@@ -408,7 +408,16 @@ it and carries your `mount` entries across.
 
 Pairings, agent-session keys and the orchestration database live in
 `~/.config/orca` and `~/.orca`, both on named volumes, so a `./dev rebuild`
-does not cost you a re-pairing. `ORCA_VERSION` in the Dockerfile pins the
+does not cost you a re-pairing. Both directories are created in the image so a
+new volume inherits the right ownership — the same trap as the cargo registry:
+where the image has no such path, Docker creates the mountpoint as root and
+`dev` cannot write its own state. Orca fails that way especially confusingly,
+reporting "Another Orca instance is already running for this userData profile"
+when what actually happened is that it could not create a lock file.
+**Volumes created before that fix keep their root ownership**, so drop them
+once: `docker volume rm <project>_orca-config <project>_orca-state`. They hold
+only pairings. `orca-server` checks for this and says so rather than letting
+Electron mislead you. `ORCA_VERSION` in the Dockerfile pins the
 version; Orca self-updates in place, and a rebuild puts it back on the pin.
 
 Three things measured rather than assumed, since none is obvious from the
