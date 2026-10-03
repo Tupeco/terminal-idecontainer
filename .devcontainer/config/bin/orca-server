@@ -53,9 +53,15 @@ LOG="${XDG_STATE_HOME:-$HOME/.local/state}/orca-server.log"
 die()  { printf 'error: %s\n' "$*" >&2; exit 1; }
 warn() { printf 'warning: %s\n' "$*" >&2; }
 
-# host:port of what the running server advertises, from its log.
+# host:port of what the running server advertises, and what it binds, from its
+# log. The advertised one is what a client dials; the bound one is inside the
+# container, behind the published port.
 advertised() {
   sed -n 's|^Advertised endpoint: ws://||p' "$LOG" 2>/dev/null | tail -n1
+}
+
+bound() {
+  sed -n 's|^Bound endpoint: ws://||p' "$LOG" 2>/dev/null | tail -n1
 }
 
 running() { tmux has-session -t "$SESSION" 2>/dev/null; }
@@ -85,8 +91,11 @@ cmd_start() {
       printf '    ./dev orca-stop && ./dev orca %s\n' "$addr" >&2
       exit 1
     fi
-    echo "Orca server is already running (tmux session '$SESSION')"
-    cmd_url || true
+    # Report where it listens and leave it alone. Restarting would drop any
+    # client sessions attached to it, and the pairing URL is a secret better
+    # asked for than printed on every start.
+    cmd_status
+    echo "Left running. Pairing URL: orca-server url"
     return 0
   fi
 
@@ -162,11 +171,19 @@ cmd_stop() {
 }
 
 cmd_status() {
-  if running; then
-    echo "running (tmux session '$SESSION'), port $PORT"
-  else
+  if ! running; then
     echo "not running"
     return 1
+  fi
+  local a b
+  a="$(advertised)"
+  b="$(bound)"
+  if [ -n "$a" ]; then
+    printf "running: clients dial ws://%s (bound ws://%s, tmux session '%s')\n" \
+      "$a" "${b:-0.0.0.0:$PORT}" "$SESSION"
+  else
+    printf "running (tmux session '%s'), port %s; no endpoint in the log yet\n" \
+      "$SESSION" "$PORT"
   fi
 }
 

@@ -49,11 +49,13 @@ Orca server (an IDE for a fleet of agents; this container runs the runtime,
 your Mac or phone runs the UI):
 
   orca [address]
-            Start it and print the pairing URL. With no address it advertises
+            Start it and print the pairing URL. If it is already running, say
+            where it listens and leave it alone. With no address it advertises
             this machine's Tailscale address, or its LAN address if Tailscale
             is not running. Pass one to override. Not the container's address,
             and not 127.0.0.1: clients dial this machine, and Docker forwards
             the published port inward.
+  orca-url  Print the pairing URL again (it is a secret; treat it as one)
   orca-stop Stop it
   orca-log  Follow its log
 
@@ -270,8 +272,21 @@ case "${1:-}" in
     ;;
   orca)
     require_setup
+    cd "$DCDIR"
     addr="${2:-}"
+    # Already running? Say where it listens and stop there: restarting would
+    # drop any client sessions attached to it, and the advertised address is
+    # fixed at startup anyway. -T because the output is captured, and the
+    # status line is only worth printing when there is a server to describe.
     if [ -z "$addr" ]; then
+      state="$("${COMPOSE[@]}" exec -T "$SERVICE" bash -lc 'orca-server status' 2>/dev/null || true)"
+      case "$state" in
+        running*)
+          printf '%s\n' "$state"
+          echo "Left running. Pairing URL: ./dev orca-url"
+          exit 0
+          ;;
+      esac
       found="$(host_address || true)"
       [ -n "$found" ] \
         || die "could not work out this machine's address; pass one: ./dev orca <address>"
@@ -286,10 +301,14 @@ case "${1:-}" in
       *) addr="$addr:$(orca_host_port)" ;;
     esac
     echo "Advertising ws://$addr"
-    cd "$DCDIR"
     # The mapping lives in docker-compose.yml; `setup --force` adds it to an
     # older rendering.
     "${COMPOSE[@]}" exec "$SERVICE" bash -lc "orca-server start '$addr'"
+    ;;
+  orca-url)
+    require_setup
+    cd "$DCDIR"
+    "${COMPOSE[@]}" exec "$SERVICE" bash -lc 'orca-server url'
     ;;
   orca-stop)
     require_setup

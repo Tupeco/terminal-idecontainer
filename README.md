@@ -358,8 +358,17 @@ on your Mac — or the phone app — is only the UI.
 ```
 ./dev orca                 # start it, advertising this machine's address
 ./dev orca 100.64.1.20     # ...or an address you name yourself
+./dev orca-url             # print the pairing URL again
 ./dev orca-log             # follow its log
 ./dev orca-stop
+```
+
+`./dev orca` on a server that is already running says where it listens and
+leaves it alone:
+
+```
+running: clients dial ws://100.64.1.20:16768 (bound ws://0.0.0.0:6768, tmux session 'orca')
+Left running. Pairing URL: ./dev orca-url
 ```
 
 Then in Orca on the client: Settings → Remote Orca Servers → Add Server, and
