@@ -46,6 +46,9 @@ First, once per copy of this template:
             template changes). The port moves only if another project's
             container now publishes it too. Add --with-orca or --without-orca
             to change the Orca choice.
+  reconfigure [--with-orca [--orca-port <port>] | --without-orca]
+            setup <name> --force, with <name> read from the existing
+            docker-compose.yml. The same carry-over applies.
 
 Day to day:
 
@@ -154,15 +157,14 @@ confirm_build() {
         clash="$(port_clash "$port" "$(project_name)")"
         if [ -n "$clash" ]; then
           printf '  warning:      port %s: %s, so the container may fail to start.\n' "$port" "$clash"
-          printf '                ./dev setup %s --force moves it to a free one.\n' "$(project_name)"
+          printf '                ./dev reconfigure moves it to a free one.\n'
         fi
       fi
       ;;
     false) printf '  Orca server   not included\n' ;;
     *) printf '  Orca server   not included: this file predates the setting\n' ;;
   esac
-  printf '  To change:    ./dev setup %s --force --with-orca | --without-orca\n' \
-    "$(project_name)"
+  printf '  To change:    ./dev reconfigure --with-orca | --without-orca\n'
   printf 'Host SSH agent, found on every run:\n'
   printf '  %s (%s)\n' "$HOST_SSH_AUTH_SOCK" "$SSH_AGENT_NOTE"
   [ -t 0 ] || return 0
@@ -411,6 +413,28 @@ cmd_setup() {
   printf '\nNext: ./dev up\n'
 }
 
+# `setup --force` under the name the file already has, so re-rendering after a
+# template pull does not mean looking the name up first. Only options pass
+# through: a name here would either repeat the current one or rename the
+# project, and renaming means new, empty volumes, which deserves the explicit
+# `setup <new-name> --force` spelling.
+cmd_reconfigure() {
+  require_setup
+  local name arg prev=""
+  for arg in "$@"; do
+    case "$arg" in
+      -*) ;;
+      # The value after --orca-port is the one bare word allowed.
+      *) [ "$prev" = --orca-port ] \
+           || die "reconfigure keeps the project's name; to rename, run: ./dev setup <new-name> --force" ;;
+    esac
+    prev="$arg"
+  done
+  name="$(project_name)"
+  [ -n "$name" ] || die "no 'name:' line in $COMPOSE_FILE. Run: ./dev setup <project-name> --force"
+  cmd_setup "$name" --force "$@"
+}
+
 cmd_mount() {
   require_setup
   local host_path="${1:-}" name="${2:-}" abs
@@ -472,6 +496,10 @@ case "${1:-}" in
     shift
     cmd_setup "$@"
     ;;
+  reconfigure)
+    shift
+    cmd_reconfigure "$@"
+    ;;
   mount)
     cmd_mount "${2:-}" "${3:-}"
     ;;
@@ -518,7 +546,7 @@ case "${1:-}" in
     # orca-server checks again inside, which also covers a file that predates
     # the setting.
     [ "$(orca_setting)" != false ] \
-      || die "$(project_name) is set up without Orca. Add it: ./dev setup $(project_name) --force --with-orca && ./dev up"
+      || die "$(project_name) is set up without Orca. Add it: ./dev reconfigure --with-orca && ./dev up"
     cd "$DCDIR"
     addr="${2:-}"
     # Already running? Say where it listens and stop there: restarting would
@@ -548,7 +576,7 @@ case "${1:-}" in
       *)
         port="$(orca_host_port)"
         [ -n "$port" ] \
-          || die "docker-compose.yml publishes no Orca port. Re-render it: ./dev setup $(project_name) --force --with-orca && ./dev up"
+          || die "docker-compose.yml publishes no Orca port. Re-render it: ./dev reconfigure --with-orca && ./dev up"
         addr="$addr:$port"
         ;;
     esac
@@ -570,7 +598,7 @@ case "${1:-}" in
   orca-update)
     require_setup
     [ "$(orca_setting)" != false ] \
-      || die "$(project_name) is set up without Orca. Add it: ./dev setup $(project_name) --force --with-orca && ./dev up"
+      || die "$(project_name) is set up without Orca. Add it: ./dev reconfigure --with-orca && ./dev up"
     cd "$DCDIR"
     "${COMPOSE[@]}" exec "$SERVICE" bash -lc 'orca-server update'
     ;;

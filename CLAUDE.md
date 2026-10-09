@@ -31,6 +31,7 @@ Host-side commands (run `./dev` with no arguments for the full list):
 ```sh
 ./dev setup <name> [--with-orca [--orca-port <port>] | --without-orca] [--force]
                                # render .devcontainer/docker-compose.yml from the template
+./dev reconfigure [same options] # setup <current name> --force, name read from the file
 ./dev up                       # show build parameters, confirm, build if needed, start
 ./dev rebuild                  # same, but build --no-cache; keeps volumes
 ./dev attach                   # tmux session 'main' inside the container

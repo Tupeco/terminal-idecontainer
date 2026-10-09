@@ -95,12 +95,15 @@ and the absolute host paths from `./dev mount`. If you change the template
 later — after pulling template updates into a project — re-render with:
 
 ```sh
-./dev setup newthing --force
+./dev reconfigure
 ```
 
-which rewrites the file and carries your mount entries and the Orca choice
+which is `./dev setup newthing --force` with the name read from the existing
+file. It rewrites the file and carries your mount entries and the Orca choice
 across. Add `--with-orca` or `--without-orca` to change the latter while you are
-at it. Without `--force`, `setup` refuses to overwrite.
+at it. Without `--force`, `setup` refuses to overwrite. `reconfigure` will not
+take a name: renaming a project gives it new, empty volumes, so that stays an
+explicit `./dev setup <new-name> --force`.
 
 Project names follow compose's own rule: lowercase letters, digits, dashes and
 underscores, starting with a letter or digit. `setup` checks this up front so
@@ -364,7 +367,7 @@ no agent, just as it would with none running.
 path.
 
 A `docker-compose.yml` rendered before this has the Mac path written in.
-`./dev setup <name> --force` re-renders it.
+`./dev reconfigure` re-renders it.
 
 ## Customising
 
@@ -389,7 +392,7 @@ It is left out of the image unless the project is set up with it:
 
 ```
 ./dev setup myproject --with-orca           # a new project
-./dev setup myproject --force --with-orca   # an existing one
+./dev reconfigure --with-orca              # an existing one
 ./dev up
 ```
 
@@ -462,7 +465,7 @@ they start. Setup prints the port it picked, and `./dev up` shows it again. To
 choose one yourself:
 
 ```
-./dev setup myproject --force --with-orca --orca-port 17000
+./dev reconfigure --with-orca --orca-port 17000
 ```
 
 `setup --force` keeps the project's port, so pairings keep working, unless
@@ -496,7 +499,7 @@ the better-trodden path of the two.
 
 **If you rendered docker-compose.yml before this existed**, it has neither the
 published port nor the state volumes, nor the Orca setting, so Orca is left
-out. `./dev setup <name> --force --with-orca` re-renders it and carries your
+out. `./dev reconfigure --with-orca` re-renders it and carries your
 `mount` entries across.
 
 Pairings, agent-session keys and the orchestration database live in
