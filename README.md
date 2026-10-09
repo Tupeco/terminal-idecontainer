@@ -430,9 +430,10 @@ narrower terminal it is left out with a note, because a code wrapped at the
 edge does not scan. It is drawn for a dark background, light blocks on dark.
 
 **Which address, and which port.** The container's 6768 is published on this
-machine as **16768**, and `./dev orca` advertises `<this machine>:16768` — its
-Tailscale address if Tailscale is actually up, otherwise its LAN address,
-saying which before it starts. Pass an address (optionally `host:port`) to
+machine on a port of the project's own, and `./dev orca` advertises
+`<this machine>:<that port>`. The address is this machine's Tailscale address if
+Tailscale is actually up, otherwise its LAN address, and `./dev orca` says which
+before it starts. Pass an address (optionally `host:port`) to
 override. `tailscale ip` answers with the last address it was assigned even
 when the daemon is stopped, so the detection asks `tailscale status` first; a
 tailnet address while Tailscale is down routes nowhere.
@@ -451,6 +452,23 @@ and the desktop app reports an unpaired device trying to connect, both at the
 same moment. On the Mac, `lsof -nP -iTCP:6768 -sTCP:LISTEN` shows who holds it.
 The container keeps 6768 internally — `orca serve` honours a `host:port`
 pairing address, so only the advertised number changes.
+
+**Each project has its own host port**, so several copies of this template can
+run Orca at once. `./dev setup --with-orca` picks the first port from 16768 up
+that no other project's container publishes and nothing else on this machine
+listens on. Stopped containers count, because they take their ports back when
+they start. Setup prints the port it picked, and `./dev up` shows it again. To
+choose one yourself:
+
+```
+./dev setup myproject --force --with-orca --orca-port 17000
+```
+
+`setup --force` keeps the project's port, so pairings keep working, unless
+another project's container has started publishing it since. In that case it
+moves to a free one and says so, and clients have to pair again, because the
+address is baked into the pairing. `./dev up` warns before building if a project
+set up since then has taken the same port.
 
 `127.0.0.1` does not work either, even when the client is this same Mac, and
 the reason is worth knowing: a connection through a published port arrives at
