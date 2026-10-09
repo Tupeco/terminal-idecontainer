@@ -63,7 +63,8 @@ your Mac or phone runs the UI). Only in a project set up --with-orca:
             is not running. Pass one to override. Not the container's address,
             and not 127.0.0.1: clients dial this machine, and Docker forwards
             the published port inward.
-  orca-url  Print the pairing URL again (it is a secret; treat it as one)
+  orca-url  Print the pairing URL and its QR code again (it is a secret;
+            treat it as one)
   orca-stop Stop it
   orca-log  Follow its log
 

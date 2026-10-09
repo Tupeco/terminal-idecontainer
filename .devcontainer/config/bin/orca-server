@@ -195,6 +195,27 @@ cmd_url() {
   [ -n "$url" ] || die "no pairing URL in $LOG yet"
   printf '\nPairing URL (treat it like a password):\n\n  %s\n\n' "$url"
   sed -n 's/^Advertised endpoint: /Advertised endpoint: /p' "$LOG" | tail -n1
+  show_qr "$url"
+}
+
+# The pairing URL runs to a few hundred characters with its keys, which is
+# tedious to get onto a phone any other way. Only on a terminal: captured or
+# piped output gets the URL alone. And only when it fits, because a QR code
+# wrapped at the terminal's edge does not scan.
+show_qr() {
+  local qr width cols
+  [ -t 1 ] || return 0
+  command -v qrencode >/dev/null || return 0
+  qr="$(qrencode -t utf8 "$1")"
+  # Characters, not bytes: each module is a multi-byte block glyph.
+  width="$(printf '%s' "${qr%%$'\n'*}" | LC_ALL=C.UTF-8 wc -m)"
+  cols="$(tput cols 2>/dev/null || echo 80)"
+  if [ "$width" -gt "$cols" ]; then
+    printf '\nThe QR code needs %d columns and this terminal has %d.\n' "$width" "$cols"
+    printf 'Widen it and run ./dev orca-url to see the code.\n'
+    return 0
+  fi
+  printf '\n%s\n' "$qr"
 }
 
 cmd_log() {

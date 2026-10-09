@@ -412,6 +412,11 @@ RUN curl -fsSL https://claude.ai/install.sh | bash \
 # .deb's own dependencies, nothing else is missing and `serve` answers on its
 # port.
 #
+# qrencode is for `orca-server url`, which also draws the pairing URL as a QR
+# code to scan with the phone app. It is installed here rather than with the
+# base packages so only images with Orca carry it, and adding it rebuilt this
+# layer alone.
+#
 # Opt-in: `./dev setup <name> --with-orca` writes WITH_ORCA=true into the build
 # args in docker-compose.yml, and without it the RUN below does nothing.
 #
@@ -442,7 +447,7 @@ RUN set -eux; \
     apt-get update; \
     alsa=libasound2t64; \
     apt-cache show libasound2t64 >/dev/null 2>&1 || alsa=libasound2; \
-    apt-get install -y --no-install-recommends "$alsa" /tmp/orca.deb; \
+    apt-get install -y --no-install-recommends "$alsa" qrencode /tmp/orca.deb; \
     rm -f /tmp/orca.deb; \
     rm -rf /var/lib/apt/lists/*; \
     orca-ide --version
