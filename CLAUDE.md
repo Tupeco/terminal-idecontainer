@@ -34,7 +34,7 @@ Host-side commands (run `./dev` with no arguments for the full list):
 ./dev up                       # show build parameters, confirm, build if needed, start
 ./dev rebuild                  # same, but build --no-cache; keeps volumes
 ./dev attach                   # tmux session 'main' inside the container
-./dev orca [addr] | orca-url | orca-log | orca-stop
+./dev orca [addr] | orca-url | orca-log | orca-stop | orca-update
 ./dev mount <host-path> <name> | unmount <name>   # then ./dev up (recreates the container)
 ```
 
@@ -96,7 +96,14 @@ Several files are parsed by other files, so their format is a contract:
   `tailscale status` succeeds, otherwise LAN) and calls `orca-server start` in
   the container. `orca-server` runs `orca-ide serve` under Xvfb in tmux session
   `orca`, logs to `~/.local/state/orca-server.log`, and reads the advertised
-  endpoint and pairing URL back out of that log. The container listens on 6768.
+  endpoint and pairing URL back out of that log. Orca also runs a terminal
+  daemon (`daemon-entry.js`) in a session of its own, which owns the agents'
+  shells, possibly including the one you are running in. `orca-server stop`
+  and `update` must stop only the tmux pane's process group and wait on that.
+  Never `pkill orca-ide`. `orca-server update` installs the latest `.deb`
+  from GitHub with `sudo apt-get` and restarts the server at its advertised
+  address. That change lasts until the container is recreated, unless
+  `ORCA_VERSION` is bumped. The container listens on 6768.
   The host publishes it on a per-project port, never 6768 itself, because
   Orca's desktop app already uses 6768. `ORCA_VERSION` in the Dockerfile pins
   the version.
