@@ -17,6 +17,11 @@ services:
       args:
         USER_UID: "${USER_UID:-1000}"
         USER_GID: "${USER_GID:-1000}"
+        # `./dev setup <name> --with-orca` writes "true" here; see the Orca step
+        # at the end of the Dockerfile. Kept in this file rather than passed on
+        # the command line so every build of this project agrees, devcontainer
+        # tooling included. `./dev setup <name> --force` carries it across.
+        WITH_ORCA: "__WITH_ORCA__"
 
     # Tagged per project as well. Each copy of this template owns its Dockerfile
     # and will drift as you add packages to it; a shared tag would mean one

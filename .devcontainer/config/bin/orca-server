@@ -99,7 +99,8 @@ cmd_start() {
     return 0
   fi
 
-  command -v orca-ide >/dev/null || die "orca-ide is not installed in this image"
+  command -v orca-ide >/dev/null \
+    || die "this image was built without Orca. On the host: ./dev setup <name> --force --with-orca && ./dev up"
   if [ "$(id -u)" -eq 0 ]; then
     die "run this as an unprivileged user: Electron will not start as root without --no-sandbox"
   fi

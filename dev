@@ -28,12 +28,15 @@ Usage: ./dev <command>
 
 First, once per copy of this template:
 
-  setup <name> [--force]
+  setup <name> [--with-orca | --without-orca] [--force]
             Render docker-compose.yml from the template for a project called
             <name>. The name prefixes every named volume, so each project gets
             its own workspace, caches, git identity and Claude Code login.
+            --with-orca includes the Orca server (below) in the image. It is
+            stored in docker-compose.yml, so every up and rebuild keeps it.
             --force re-renders over an existing file, carrying your `mount`
-            entries across (use it after pulling template changes).
+            entries and the Orca choice across (use it after pulling template
+            changes). Add --with-orca or --without-orca to change the latter.
 
 Day to day:
 
@@ -45,8 +48,11 @@ Day to day:
   rebuild   Rebuild the image from scratch, keeping all volumes
   nuke      Remove the container AND all volumes, including your source
 
+  up and rebuild show the build parameters setup stored and ask before
+  building. With no terminal to answer, they go ahead.
+
 Orca server (an IDE for a fleet of agents; this container runs the runtime,
-your Mac or phone runs the UI):
+your Mac or phone runs the UI). Only in a project set up --with-orca:
 
   orca [address]
             Start it and print the pairing URL. If it is already running, say
@@ -75,6 +81,48 @@ EOF
 
 require_setup() {
   [ -f "$COMPOSE_FILE" ] || die "not set up yet in $(basename "$ROOT") — run: ./dev setup <project-name>"
+}
+
+# The rendered compose file's own project name, for messages that tell you
+# which setup command to run.
+project_name() {
+  awk '/^name:/ { print $2; exit }' "$COMPOSE_FILE"
+}
+
+# Whether this project's image includes Orca: "true" or "false", from the build
+# args `setup` wrote. Empty for a file rendered before the setting existed,
+# which the Dockerfile's default turns into "false".
+orca_setting() {
+  awk -F'"' '/^[[:space:]]*WITH_ORCA:/ { print $2; exit }' "$COMPOSE_FILE"
+}
+
+# Show the build parameters and ask before building. The parameters are already
+# settled in docker-compose.yml, so this is a last look rather than a question
+# that must be answered: with no terminal on stdin (a script, a pipe) it goes
+# ahead.
+confirm_build() {
+  local ok
+  printf 'Build parameters, from %s:\n' "${COMPOSE_FILE#"$ROOT"/}"
+  case "$(orca_setting)" in
+    true) printf '  Orca server   included\n' ;;
+    false) printf '  Orca server   not included\n' ;;
+    *) printf '  Orca server   not included: this file predates the setting\n' ;;
+  esac
+  printf '  To change:    ./dev setup %s --force --with-orca | --without-orca\n' \
+    "$(project_name)"
+  [ -t 0 ] || return 0
+  read -r -p "Build with these? [y/N] " ok || ok=""
+  case "$ok" in
+    y | Y | yes | YES) ;;
+    *) echo "aborted"; exit 1 ;;
+  esac
+}
+
+# up and rebuild used to take --with-orca. Say where it went rather than
+# ignoring it.
+no_build_options() {
+  [ $# -eq 0 ] \
+    || die "unexpected argument: $1 (build parameters are set by ./dev setup; see ./dev help)"
 }
 
 # The lines currently between the two markers, if any.
@@ -141,8 +189,19 @@ insert_mounts() {
 }
 
 cmd_setup() {
-  local name="${1:-}" force="${2:-}" carried="" host tmp
-  [ -n "$name" ] || die "usage: ./dev setup <project-name> [--force]"
+  local name="" force="" orca="" orca_note="" carried="" host tmp
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --force) force=1 ;;
+      --with-orca) orca=true ;;
+      --without-orca) orca=false ;;
+      -*) die "unknown option: $1" ;;
+      *) [ -z "$name" ] || die "usage: ./dev setup <project-name> [--with-orca | --without-orca] [--force]"
+         name="$1" ;;
+    esac
+    shift
+  done
+  [ -n "$name" ] || die "usage: ./dev setup <project-name> [--with-orca | --without-orca] [--force]"
   [ -f "$TEMPLATE" ] || die "missing template: $TEMPLATE"
 
   # Compose's own rule for project names, enforced here so the failure arrives
@@ -151,17 +210,30 @@ cmd_setup() {
     || die "project name must be lowercase letters, digits, dashes or underscores, starting with a letter or digit (got: $name)"
 
   if [ -f "$COMPOSE_FILE" ]; then
-    [ "$force" = "--force" ] \
-      || die "$COMPOSE_FILE already exists. Pass --force to re-render it (your mount entries are carried over)."
+    [ -n "$force" ] \
+      || die "$COMPOSE_FILE already exists. Pass --force to re-render it (your mount entries and Orca choice are carried over)."
     carried="$(extra_mounts)"
+    # Remembered like the mounts, unless this run says otherwise. A file from
+    # before the setting has nothing to carry, so say so rather than quietly
+    # settling on "not included".
+    if [ -z "$orca" ]; then
+      orca="$(orca_setting)"
+      if [ -n "$orca" ]; then
+        orca_note=" (carried over)"
+      else
+        orca_note=" (the old file predates this setting; pass --with-orca to include it)"
+      fi
+    fi
   fi
+  orca="${orca:-false}"
 
   # Underscores are legal in a compose project name but not in a hostname.
   host="${name//_/-}"
 
   tmp="$COMPOSE_FILE.tmp"
   sed -e "s/__PROJECT_NAME__/$name/g" \
-      -e "s/__PROJECT_HOSTNAME__/$host/g" "$TEMPLATE" > "$tmp"
+      -e "s/__PROJECT_HOSTNAME__/$host/g" \
+      -e "s/__WITH_ORCA__/$orca/g" "$TEMPLATE" > "$tmp"
   mv "$tmp" "$COMPOSE_FILE"
   insert_mounts "$carried"
 
@@ -171,6 +243,11 @@ cmd_setup() {
   printf '  compose file : %s\n' "${COMPOSE_FILE#"$ROOT"/}"
   printf '  volumes      : %s_workspace, %s_claude-config, ...\n' "$name" "$name"
   printf '  exchange dir : %s -> /mount\n' "${MOUNT_DIR#"$ROOT"/}"
+  if [ "$orca" = true ]; then
+    printf '  Orca server  : included%s\n' "$orca_note"
+  else
+    printf '  Orca server  : not included%s\n' "$orca_note"
+  fi
   if [ -n "$carried" ]; then
     printf '  carried over %d extra mount(s)\n' "$(printf '%s\n' "$carried" | grep -c .)"
   fi
@@ -231,7 +308,8 @@ cmd_unmount() {
 
 case "${1:-}" in
   setup)
-    cmd_setup "${2:-}" "${3:-}"
+    shift
+    cmd_setup "$@"
     ;;
   mount)
     cmd_mount "${2:-}" "${3:-}"
@@ -241,6 +319,9 @@ case "${1:-}" in
     ;;
   up)
     require_setup
+    shift
+    no_build_options "$@"
+    confirm_build
     # Docker would create this as root if it were missing, leaving you a
     # directory inside the container you cannot write to.
     mkdir -p "$MOUNT_DIR"
@@ -272,6 +353,11 @@ case "${1:-}" in
     ;;
   orca)
     require_setup
+    # Before working out addresses, so a project without Orca fails at once.
+    # orca-server checks again inside, which also covers a file that predates
+    # the setting.
+    [ "$(orca_setting)" != false ] \
+      || die "$(project_name) is set up without Orca. Add it: ./dev setup $(project_name) --force --with-orca && ./dev up"
     cd "$DCDIR"
     addr="${2:-}"
     # Already running? Say where it listens and stop there: restarting would
@@ -327,6 +413,9 @@ case "${1:-}" in
     ;;
   rebuild)
     require_setup
+    shift
+    no_build_options "$@"
+    confirm_build
     cd "$DCDIR"
     "${COMPOSE[@]}" build --no-cache
     "${COMPOSE[@]}" up -d

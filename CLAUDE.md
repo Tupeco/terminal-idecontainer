@@ -29,9 +29,10 @@ XDG_CONFIG_HOME=$PWD/.devcontainer/config nvim --headless +qa
 Host-side commands (run `./dev` with no arguments for the full list):
 
 ```sh
-./dev setup <name> [--force]   # render .devcontainer/docker-compose.yml from the template
-./dev up                       # build if needed, start
-./dev rebuild                  # build --no-cache, keeps volumes
+./dev setup <name> [--with-orca | --without-orca] [--force]
+                               # render .devcontainer/docker-compose.yml from the template
+./dev up                       # show build parameters, confirm, build if needed, start
+./dev rebuild                  # same, but build --no-cache; keeps volumes
 ./dev attach                   # tmux session 'main' inside the container
 ./dev orca [addr] | orca-url | orca-log | orca-stop
 ./dev mount <host-path> <name> | unmount <name>   # then ./dev up (recreates the container)
@@ -51,7 +52,7 @@ Several files are parsed by other files, so their format is a contract:
   line in that form. If you change the parser list, also update the expected
   count (`-lt 12`) in the Dockerfile's verification step.
 - **`docker-compose.yml.template` → `docker-compose.yml`.** `./dev setup`
-  substitutes `__PROJECT_NAME__` and `__PROJECT_HOSTNAME__`. The rendered file
+  substitutes `__PROJECT_NAME__`, `__PROJECT_HOSTNAME__` and `__WITH_ORCA__`. The rendered file
   is gitignored and machine-specific; edit the template, never the rendered
   file. `dev` finds its own mount entries between the `# >>> extra mounts` /
   `# <<< extra mounts` markers, and `orca_host_port` reads the host port from a
@@ -67,7 +68,21 @@ Several files are parsed by other files, so their format is a contract:
   `HELIX_RUNTIME` for their own process. Never export `HELIX_RUNTIME`
   globally: one editor would load the other's grammars. Both share
   `config/helix/languages.toml`; evil-helix only has its own `config.toml`.
-- **Orca:** `./dev orca` on the host works out the host's address (Tailscale if
+- **Build parameters are chosen at `setup` and stored** as `build.args` in the
+  rendered compose file. `setup --force` carries them across, as it does
+  mounts. `up` and `rebuild` take no options. They read the parameters back
+  (`orca_setting`), show them in `confirm_build`, and ask before building. With
+  no TTY on stdin they skip the question and build. A new parameter needs a
+  placeholder in the template, flags and carry-over in `cmd_setup`, a line in
+  `confirm_build`, and the usage text.
+- **Orca is opt-in** (`setup --with-orca` → `WITH_ORCA: "true"` → `ARG
+  WITH_ORCA`). Keep its step **last** in the Dockerfile. A changed build arg
+  invalidates every `RUN` after its `ARG` line, so anywhere earlier, toggling
+  Orca or bumping `ORCA_VERSION` would re-run the plugin and parser bake. A
+  compose file rendered before the setting existed has no `WITH_ORCA` line, and
+  the Dockerfile default (`false`) applies. The Orca volumes, the published
+  port and `orca-server` are present either way.
+- **Orca runtime:** `./dev orca` on the host works out the host's address (Tailscale if
   `tailscale status` succeeds, otherwise LAN) and calls `orca-server start` in
   the container. `orca-server` runs `orca-ide serve` under Xvfb in tmux session
   `orca`, logs to `~/.local/state/orca-server.log`, and reads the advertised

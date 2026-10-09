@@ -270,7 +270,7 @@ RUN set -eux; \
     tar -xzf /tmp/evil-helix.tar.gz -C /opt/evil-helix --strip-components=1; \
     rm /tmp/evil-helix.tar.gz
 
-COPY --chmod=0755 config/bin/hx config/bin/ehx config/bin/orca-server /usr/local/bin/
+COPY --chmod=0755 config/bin/hx config/bin/ehx /usr/local/bin/
 
 RUN set -eux; \
     hx --version; \
@@ -298,55 +298,6 @@ RUN set -eux; \
     ln -sf /opt/nvim/bin/nvim /usr/local/bin/nvim; \
     rm /tmp/nvim.tar.gz; \
     nvim --version | head -n1
-
-# ---------------------------------------------------------------------------
-# Orca
-#
-# An IDE for running several coding agents side by side. What earns it a place
-# in a headless image is `orca serve`: the container owns the projects,
-# worktrees, terminals and agent processes, and Orca on the Mac (or the phone
-# app) is only the UI. `./dev orca` starts it; the README has the pairing
-# steps, and `orca-server` is the wrapper it calls.
-#
-# The .deb rather than the AppImage, deliberately: it declares its runtime
-# dependencies (gtk, nss, at-spi, xvfb and a dozen more) so apt resolves them,
-# while the AppImage needs libfuse2 and a FUSE device this container does not
-# have. Upstream names the Linux binary `orca-ide` so it does not collide with
-# the GNOME Orca screen reader.
-#
-# Pinned like every other tool here, though Orca also updates itself: a rebuild
-# puts the image back on this version, so bump the ARG rather than fight it.
-#
-# Note `serve` runs as ${USERNAME}, not root -- Electron refuses to start as
-# root without --no-sandbox. `orca-ide --version` below is answered before
-# Electron starts, so it works as a build-time check.
-#
-# ALSA is installed by hand because the .deb's Depends list leaves it out even
-# though the Electron binary links against it; without it orca-ide dies with
-# "libasound.so.2: cannot open shared object file". The package was renamed by
-# the 64-bit time_t transition (libasound2 -> libasound2t64), and on 26.04 the
-# old name survives only as a virtual package with two providers, which apt
-# refuses to resolve -- so pick whichever name this release really has rather
-# than hardcoding either. Verified in a clean 26.04 root: with it, and with the
-# .deb's own dependencies, nothing else is missing and `serve` answers on its
-# port.
-# ---------------------------------------------------------------------------
-ARG ORCA_VERSION=1.4.223
-RUN set -eux; \
-    case "$(dpkg --print-architecture)" in \
-        amd64) orcaarch=amd64 ;; \
-        arm64) orcaarch=arm64 ;; \
-        *) echo "unsupported architecture" >&2; exit 1 ;; \
-    esac; \
-    curl -fsSL -o /tmp/orca.deb \
-        "https://github.com/stablyai/orca/releases/download/v${ORCA_VERSION}/orca-ide_${ORCA_VERSION}_${orcaarch}.deb"; \
-    apt-get update; \
-    alsa=libasound2t64; \
-    apt-cache show libasound2t64 >/dev/null 2>&1 || alsa=libasound2; \
-    apt-get install -y --no-install-recommends "$alsa" /tmp/orca.deb; \
-    rm -f /tmp/orca.deb; \
-    rm -rf /var/lib/apt/lists/*; \
-    orca-ide --version
 
 # ---------------------------------------------------------------------------
 # User-level configuration
@@ -428,6 +379,74 @@ RUN set -eux; \
 # volume; the account identity lands in ~/.claude.json, linked into it above.
 RUN curl -fsSL https://claude.ai/install.sh | bash \
     && "/home/${USERNAME}/.local/bin/claude" --version
+
+# ---------------------------------------------------------------------------
+# Orca, only with --with-orca
+#
+# An IDE for running several coding agents side by side. What earns it a place
+# in a headless image is `orca serve`: the container owns the projects,
+# worktrees, terminals and agent processes, and Orca on the Mac (or the phone
+# app) is only the UI. `./dev orca` starts it; the README has the pairing
+# steps, and `orca-server` is the wrapper it calls.
+#
+# The .deb rather than the AppImage, deliberately: it declares its runtime
+# dependencies (gtk, nss, at-spi, xvfb and a dozen more) so apt resolves them,
+# while the AppImage needs libfuse2 and a FUSE device this container does not
+# have. Upstream names the Linux binary `orca-ide` so it does not collide with
+# the GNOME Orca screen reader.
+#
+# Pinned like every other tool here, though Orca also updates itself: a rebuild
+# puts the image back on this version, so bump the ARG rather than fight it.
+#
+# Note `serve` runs as ${USERNAME}, not root -- Electron refuses to start as
+# root without --no-sandbox. `orca-ide --version` below is answered before
+# Electron starts, so it works as a build-time check.
+#
+# ALSA is installed by hand because the .deb's Depends list leaves it out even
+# though the Electron binary links against it; without it orca-ide dies with
+# "libasound.so.2: cannot open shared object file". The package was renamed by
+# the 64-bit time_t transition (libasound2 -> libasound2t64), and on 26.04 the
+# old name survives only as a virtual package with two providers, which apt
+# refuses to resolve -- so pick whichever name this release really has rather
+# than hardcoding either. Verified in a clean 26.04 root: with it, and with the
+# .deb's own dependencies, nothing else is missing and `serve` answers on its
+# port.
+#
+# Opt-in: `./dev setup <name> --with-orca` writes WITH_ORCA=true into the build
+# args in docker-compose.yml, and without it the RUN below does nothing.
+#
+# This is the last step in the file on purpose. Docker treats a build arg as an
+# input to every RUN after its ARG line, so anywhere earlier, switching Orca on
+# or off -- or bumping ORCA_VERSION -- would re-run the plugin and parser bake
+# and the Claude Code install as well. Here it costs this layer alone.
+#
+# orca-server is copied in either way, so that in an image without Orca it says
+# what to do rather than the shell reporting a missing command.
+# ---------------------------------------------------------------------------
+USER root
+ARG WITH_ORCA=false
+ARG ORCA_VERSION=1.4.223
+COPY --chmod=0755 config/bin/orca-server /usr/local/bin/
+RUN set -eux; \
+    if [ "${WITH_ORCA}" != true ]; then \
+        echo "Orca not included; ./dev setup <name> --force --with-orca adds it"; \
+        exit 0; \
+    fi; \
+    case "$(dpkg --print-architecture)" in \
+        amd64) orcaarch=amd64 ;; \
+        arm64) orcaarch=arm64 ;; \
+        *) echo "unsupported architecture" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL -o /tmp/orca.deb \
+        "https://github.com/stablyai/orca/releases/download/v${ORCA_VERSION}/orca-ide_${ORCA_VERSION}_${orcaarch}.deb"; \
+    apt-get update; \
+    alsa=libasound2t64; \
+    apt-cache show libasound2t64 >/dev/null 2>&1 || alsa=libasound2; \
+    apt-get install -y --no-install-recommends "$alsa" /tmp/orca.deb; \
+    rm -f /tmp/orca.deb; \
+    rm -rf /var/lib/apt/lists/*; \
+    orca-ide --version
+USER ${USERNAME}
 
 WORKDIR /home/${USERNAME}/src
 

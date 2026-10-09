@@ -52,6 +52,11 @@ chmod +x dev
 ./dev attach            # drops you into tmux inside the container
 ```
 
+`setup` also takes the build parameters, which it stores in the rendered
+`docker-compose.yml`. So far there is one: `--with-orca` includes the [Orca
+server](#orca-server-beta). `up` and `rebuild` show the stored parameters and
+ask before they build. When there is no terminal to answer, they go ahead.
+
 Then, inside:
 
 ```sh
@@ -93,8 +98,9 @@ later — after pulling template updates into a project — re-render with:
 ./dev setup newthing --force
 ```
 
-which rewrites the file and carries your mount entries across. Without
-`--force`, `setup` refuses to overwrite.
+which rewrites the file and carries your mount entries and the Orca choice
+across. Add `--with-orca` or `--without-orca` to change the latter while you are
+at it. Without `--force`, `setup` refuses to overwrite.
 
 Project names follow compose's own rule: lowercase letters, digits, dashes and
 underscores, starting with a letter or digit. `setup` checks this up front so
@@ -355,6 +361,22 @@ side by side. It has a headless mode, and that is what is installed here: the
 container owns the projects, worktrees, terminals and agent processes, and Orca
 on your Mac — or the phone app — is only the UI.
 
+It is left out of the image unless the project is set up with it:
+
+```
+./dev setup myproject --with-orca           # a new project
+./dev setup myproject --force --with-orca   # an existing one
+./dev up
+```
+
+The choice is written into `docker-compose.yml` as a build arg, so every
+`up` and `rebuild` keeps it, and so does devcontainer tooling that builds from
+that file. `setup --force` carries it across along with your mounts.
+`--without-orca` takes Orca out again. Orca is the last step in the Dockerfile,
+so turning it on or off, or bumping `ORCA_VERSION`, rebuilds only that layer
+and not the editor setup before it. A plain `./dev up` is enough; there is no
+need for `rebuild`.
+
 ```
 ./dev orca                 # start it, advertising this machine's address
 ./dev orca 100.64.1.20     # ...or an address you name yourself
@@ -422,8 +444,9 @@ client being undocumented and unsupported as a standalone target
 the better-trodden path of the two.
 
 **If you rendered docker-compose.yml before this existed**, it has neither the
-published port nor the state volumes. `./dev setup <name> --force` re-renders
-it and carries your `mount` entries across.
+published port nor the state volumes, nor the Orca setting, so Orca is left
+out. `./dev setup <name> --force --with-orca` re-renders it and carries your
+`mount` entries across.
 
 Pairings, agent-session keys and the orchestration database live in
 `~/.config/orca` and `~/.orca`, both on named volumes, so a `./dev rebuild`
