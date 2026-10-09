@@ -331,7 +331,7 @@ RUN set -eux; \
 # .deb's own dependencies, nothing else is missing and `serve` answers on its
 # port.
 # ---------------------------------------------------------------------------
-ARG ORCA_VERSION=1.4.222
+ARG ORCA_VERSION=1.4.223
 RUN set -eux; \
     case "$(dpkg --print-architecture)" in \
         amd64) orcaarch=amd64 ;; \
