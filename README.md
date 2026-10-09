@@ -409,6 +409,7 @@ need for `rebuild`.
 ./dev orca-url             # print the pairing URL and its QR code again
 ./dev orca-log             # follow its log
 ./dev orca-stop
+./dev orca-update          # install the latest release and restart on it
 ```
 
 `./dev orca` on a server that is already running says where it listens and
@@ -511,6 +512,24 @@ once: `docker volume rm <project>_orca-config <project>_orca-state`. They hold
 only pairings. `orca-server` checks for this and says so rather than letting
 Electron mislead you. `ORCA_VERSION` in the Dockerfile pins the
 version; Orca self-updates in place, and a rebuild puts it back on the pin.
+
+**Keeping up with Orca's releases.** `./dev orca-update` installs the latest
+release in the running container, without a rebuild. If the server is running,
+it restarts it at the address it was already advertising. Pairings live in the
+volumes, so clients reconnect without pairing again. It finishes by saying
+which version it moved from and to, or that you are already on the latest, and
+it never moves to an older release than the one installed.
+
+Only the server restarts. Orca runs its agents' terminals from a separate
+daemon, in a session of its own, so that they outlive the server, and
+`orca-stop` and `orca-update` both leave it running. That matters if you
+attached to this container through Orca: your shell is one of those terminals.
+
+The update lives in the container, not the image, so it lasts until the
+container is recreated: `./dev rebuild`, or an `./dev up` after a change.
+That puts Orca back on `ORCA_VERSION`, and running an older Orca against state
+a newer one has written is asking for trouble. To keep the update, bump the pin
+to the version `orca-update` reports, as it reminds you to.
 
 Three things measured rather than assumed, since none is obvious from the
 upstream docs:

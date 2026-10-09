@@ -6,6 +6,8 @@
 #   orca-server status
 #   orca-server url                       print the pairing URL again
 #   orca-server log                       follow the log
+#   orca-server update                    install the latest release and
+#                                         restart the server on it
 #
 # Orca is an IDE for running several coding agents side by side; `serve` is the
 # mode where this container owns the projects, worktrees, terminals and agent
@@ -49,6 +51,7 @@ set -euo pipefail
 PORT="${ORCA_PORT:-6768}"
 SESSION=orca
 LOG="${XDG_STATE_HOME:-$HOME/.local/state}/orca-server.log"
+REPO=stablyai/orca
 
 die()  { printf 'error: %s\n' "$*" >&2; exit 1; }
 warn() { printf 'warning: %s\n' "$*" >&2; }
@@ -71,7 +74,7 @@ usage() {
 }
 
 cmd_start() {
-  local addr="${1:-}"
+  local addr="${1:-}" quiet="${2:-}"
   if running; then
     # Asking for a different address than the running server advertises is a
     # request it cannot satisfy: the address is baked into the pairing code at
@@ -154,7 +157,7 @@ cmd_start() {
   for _ in $(seq 60); do
     if grep -q '^Pairing URL:' "$LOG" 2>/dev/null; then
       echo "Orca server listening on port $PORT (tmux session '$SESSION')"
-      cmd_url
+      [ -n "$quiet" ] || cmd_url
       return 0
     fi
     running || { echo "--- log ---"; cat "$LOG"; die "the server exited; see above"; }
@@ -167,8 +170,111 @@ cmd_start() {
 
 cmd_stop() {
   running || { echo "not running"; return 0; }
+  local pgid _
+  # The pane's process group: xvfb-run, Xvfb, and the server with its Electron
+  # helpers. Deliberately not every orca-ide process: Orca runs its agents'
+  # terminals from a daemon (daemon-entry.js) in a session of its own, so that
+  # they outlive the server, and the shell running this may well be one of
+  # them. Killing the tmux session never reaches that daemon, and neither
+  # does the wait below.
+  pgid="$(tmux list-panes -t "$SESSION" -F '#{pane_pid}' 2>/dev/null | head -n1)"
   tmux kill-session -t "$SESSION"
+  # Gone from tmux is not gone. Electron takes a moment to shut its helpers
+  # down, and a server started again meanwhile could find the old one still
+  # holding its single-instance lock.
+  if [ -n "$pgid" ]; then
+    for _ in $(seq 40); do
+      pgrep -g "$pgid" >/dev/null || break
+      sleep 0.25
+    done
+    if pgrep -g "$pgid" >/dev/null; then
+      warn "Orca's server processes are still exiting after 10s"
+    fi
+  fi
   echo "stopped"
+}
+
+installed_version() {
+  dpkg-query -W -f='${Version}' orca-ide 2>/dev/null || true
+}
+
+# The newest release, from where GitHub's releases/latest page redirects to:
+# .../releases/tag/v<version>. Unlike the API, that needs no token and has no
+# rate limit to trip over.
+latest_version() {
+  local url
+  url="$(curl -fsSIL -o /dev/null -w '%{url_effective}' \
+           "https://github.com/$REPO/releases/latest")" || return 1
+  url="${url##*/tag/}"
+  printf '%s\n' "${url#v}"
+}
+
+# Install the latest release over the one the image was built with, and
+# restart the server on it if it was running, at the address it advertised.
+# Pairings live in volumes, so clients reconnect without pairing again.
+#
+# This changes the container, not the image: it lasts until the container is
+# recreated (by `./dev rebuild`, or an `./dev up` after a change), which puts
+# it back on ORCA_VERSION. Hence the reminder at the end to bump the pin.
+cmd_update() {
+  local current latest arch tmp now addr=""
+  command -v orca-ide >/dev/null \
+    || die "this image was built without Orca. On the host: ./dev setup <name> --force --with-orca && ./dev up"
+  current="$(installed_version)"
+  latest="$(latest_version)" \
+    || die "could not reach GitHub to find the latest Orca release"
+  [[ "$latest" =~ ^[0-9]+(\.[0-9]+)+$ ]] \
+    || die "could not make out the latest Orca release from GitHub (got: $latest)"
+  # gt rather than !=, so a pin newer than GitHub's "latest" (which skips
+  # pre-releases) is never downgraded.
+  if [ -n "$current" ] && ! dpkg --compare-versions "$latest" gt "$current"; then
+    echo "Orca $current is up to date (latest release: $latest)."
+    return 0
+  fi
+
+  case "$(dpkg --print-architecture)" in
+    amd64) arch=amd64 ;;
+    arm64) arch=arm64 ;;
+    *) die "no Orca release for $(dpkg --print-architecture)" ;;
+  esac
+
+  echo "Updating Orca ${current:-(unknown)} -> $latest"
+  tmp="$(mktemp -d)"
+  # shellcheck disable=SC2064  # expand now: $tmp is local and gone by exit
+  trap "rm -rf '$tmp'" EXIT
+  # Readable by apt's unprivileged _apt user, or apt warns that it had to
+  # fall back to reading the file as root.
+  chmod 0755 "$tmp"
+  curl -fSL --progress-bar -o "$tmp/orca.deb" \
+    "https://github.com/$REPO/releases/download/v$latest/orca-ide_${latest}_$arch.deb" \
+    || die "could not download Orca $latest; ${current:-the old version} is still installed"
+  chmod 0644 "$tmp/orca.deb"
+
+  # The image deletes apt's package lists to stay small, and apt needs them for
+  # any dependency the new version adds. env because sudo resets the
+  # environment, DEBIAN_FRONTEND with it.
+  sudo env DEBIAN_FRONTEND=noninteractive apt-get update -qq \
+    || die "apt-get update failed; Orca ${current:-the old version} is still installed"
+  sudo env DEBIAN_FRONTEND=noninteractive \
+    apt-get install -y -qq --no-install-recommends "$tmp/orca.deb" \
+    || die "installing Orca $latest failed; ${current:-the old version} is still installed"
+
+  now="$(installed_version)"
+  [ "$now" = "$latest" ] \
+    || die "the install finished, but dpkg reports Orca ${now:-(none)} rather than $latest"
+
+  if running; then
+    addr="$(advertised)"
+    echo "Restarting the server on $now..."
+    cmd_stop >/dev/null
+    cmd_start "$addr" quiet
+  fi
+
+  echo
+  echo "Updated Orca ${current:-(unknown)} -> $now."
+  [ -n "$addr" ] || echo "The server was not running; start it with ./dev orca."
+  echo "This lasts until the container is recreated. To keep $now from then on,"
+  echo "set ARG ORCA_VERSION=$now in .devcontainer/Dockerfile."
 }
 
 cmd_status() {
@@ -229,6 +335,7 @@ case "${1:-}" in
   status) cmd_status ;;
   url) cmd_url ;;
   log) cmd_log ;;
+  update) cmd_update ;;
   -h | --help | help | "") usage ;;
   *) usage >&2; exit 2 ;;
 esac

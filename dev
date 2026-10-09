@@ -74,6 +74,10 @@ your Mac or phone runs the UI). Only in a project set up --with-orca:
             treat it as one)
   orca-stop Stop it
   orca-log  Follow its log
+  orca-update
+            Install the latest Orca release in the container and restart the
+            server on it, if it is running. Lasts until the container is
+            recreated; it says which ORCA_VERSION to pin to keep it.
 
 Sharing directories with the host:
 
@@ -562,6 +566,13 @@ case "${1:-}" in
     require_setup
     cd "$DCDIR"
     "${COMPOSE[@]}" exec "$SERVICE" bash -lc 'orca-server stop'
+    ;;
+  orca-update)
+    require_setup
+    [ "$(orca_setting)" != false ] \
+      || die "$(project_name) is set up without Orca. Add it: ./dev setup $(project_name) --force --with-orca && ./dev up"
+    cd "$DCDIR"
+    "${COMPOSE[@]}" exec "$SERVICE" bash -lc 'orca-server update'
     ;;
   orca-log)
     require_setup
