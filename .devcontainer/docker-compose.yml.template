@@ -42,6 +42,11 @@ services:
       # macOS Docker Desktop exposes the host SSH agent at this fixed path.
       SSH_AUTH_SOCK: /ssh-agent
 
+    # Everything between these two markers exists only for Orca, and
+    # `./dev setup` leaves it out of a project set up without Orca. A host port
+    # published with nothing behind it still has to be free, so keeping it would
+    # let a port Orca never uses stop the container from starting.
+    # >>> orca only
     # Orca's headless server, when you start it with `./dev orca`. Published on
     # every interface on purpose: the address a remote client pairs with is the
     # *host's* -- its Tailscale address, say -- and the host forwards to here,
@@ -57,6 +62,7 @@ services:
     # this mapping and advertises it, so changing the number here is enough.
     ports:
       - "16768:6768"
+    # <<< orca only
 
     volumes:
       # Source lives in a named volume, not a bind mount. On macOS this avoids

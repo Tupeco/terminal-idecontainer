@@ -55,8 +55,10 @@ Several files are parsed by other files, so their format is a contract:
   substitutes `__PROJECT_NAME__`, `__PROJECT_HOSTNAME__` and `__WITH_ORCA__`. The rendered file
   is gitignored and machine-specific; edit the template, never the rendered
   file. `dev` finds its own mount entries between the `# >>> extra mounts` /
-  `# <<< extra mounts` markers, and `orca_host_port` reads the host port from a
-  `- "NNNN:6768"` line. Keep the markers and that port-line format intact.
+  `# <<< extra mounts` markers. In a project without Orca, `setup` deletes
+  everything between `# >>> orca only` / `# <<< orca only` (the published
+  port). `orca_host_port` reads the host port from a `- "NNNN:6768"` line.
+  Keep the markers and that port-line format intact.
 - **Configs are baked into the image** by `COPY` in the Dockerfile, so changes
   under `.devcontainer/config/` need `./dev rebuild`. The exception is
   `TIPS.md`, which is bind-mounted read-only to `~/.config/nvim/TIPS.md`.
@@ -80,8 +82,9 @@ Several files are parsed by other files, so their format is a contract:
   invalidates every `RUN` after its `ARG` line, so anywhere earlier, toggling
   Orca or bumping `ORCA_VERSION` would re-run the plugin and parser bake. A
   compose file rendered before the setting existed has no `WITH_ORCA` line, and
-  the Dockerfile default (`false`) applies. The Orca volumes, the published
-  port and `orca-server` are present either way.
+  the Dockerfile default (`false`) applies. The port is published only with
+  Orca, because a published port must be free on the host even with nothing
+  behind it. The Orca volumes and `orca-server` are present either way.
 - **Orca runtime:** `./dev orca` on the host works out the host's address (Tailscale if
   `tailscale status` succeeds, otherwise LAN) and calls `orca-server start` in
   the container. `orca-server` runs `orca-ide serve` under Xvfb in tmux session

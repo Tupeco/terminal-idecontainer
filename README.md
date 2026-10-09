@@ -371,7 +371,9 @@ It is left out of the image unless the project is set up with it:
 
 The choice is written into `docker-compose.yml` as a build arg, so every
 `up` and `rebuild` keeps it, and so does devcontainer tooling that builds from
-that file. `setup --force` carries it across along with your mounts.
+that file. Without Orca, `setup` also leaves out its published port, which
+would otherwise have to be free on the host for the container to start.
+`setup --force` carries the choice across along with your mounts.
 `--without-orca` takes Orca out again. Orca is the last step in the Dockerfile,
 so turning it on or off, or bumping `ORCA_VERSION`, rebuilds only that layer
 and not the editor setup before it. A plain `./dev up` is enough; there is no

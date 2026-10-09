@@ -16,6 +16,8 @@ MOUNT_DIR="$ROOT/mount"
 
 MARK_BEGIN='# >>> extra mounts'
 MARK_END='# <<< extra mounts'
+ORCA_BEGIN='# >>> orca only'
+ORCA_END='# <<< orca only'
 
 COMPOSE=(docker compose)
 SERVICE=dev
@@ -230,10 +232,17 @@ cmd_setup() {
   # Underscores are legal in a compose project name but not in a hostname.
   host="${name//_/-}"
 
+  # Without Orca, drop the template's Orca-only block (its published port) as
+  # well as setting the build arg. The port has to be free on the host whether
+  # or not anything listens behind it, so leaving it in would let Orca's port
+  # stop a container that has no Orca from starting.
+  local render=(-e "s/__PROJECT_NAME__/$name/g"
+                -e "s/__PROJECT_HOSTNAME__/$host/g"
+                -e "s/__WITH_ORCA__/$orca/g")
+  [ "$orca" = true ] || render+=(-e "/$ORCA_BEGIN/,/$ORCA_END/d")
+
   tmp="$COMPOSE_FILE.tmp"
-  sed -e "s/__PROJECT_NAME__/$name/g" \
-      -e "s/__PROJECT_HOSTNAME__/$host/g" \
-      -e "s/__WITH_ORCA__/$orca/g" "$TEMPLATE" > "$tmp"
+  sed "${render[@]}" "$TEMPLATE" > "$tmp"
   mv "$tmp" "$COMPOSE_FILE"
   insert_mounts "$carried"
 
