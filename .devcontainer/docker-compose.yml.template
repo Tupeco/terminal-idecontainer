@@ -39,7 +39,7 @@ services:
     environment:
       TERM: xterm-256color
       COLORTERM: truecolor
-      # macOS Docker Desktop exposes the host SSH agent at this fixed path.
+      # The host's SSH agent, mounted here by the /ssh-agent volume below.
       SSH_AUTH_SOCK: /ssh-agent
 
     # Everything between these two markers exists only for Orca, and
@@ -91,8 +91,11 @@ services:
       - git-config:/home/dev/.config/git
 
       # Host SSH agent, for cloning private repos without copying keys into the
-      # image. macOS Docker Desktop only; see README for Linux.
-      - /run/host-services/ssh-auth.sock:/ssh-agent
+      # image. Where it lives depends on the host, so `./dev` works it out on
+      # every run and passes it in: Docker Desktop for Mac's fixed path inside
+      # its VM, or on Linux whatever $SSH_AUTH_SOCK points at. The default here
+      # is the Mac path, for tooling that runs compose without `./dev`.
+      - ${HOST_SSH_AUTH_SOCK:-/run/host-services/ssh-auth.sock}:/ssh-agent
 
       # The exchange directory: <repo>/mount on the Mac, /mount inside. This is
       # the seam between the two worlds — context to hand to Claude, generated

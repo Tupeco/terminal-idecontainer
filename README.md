@@ -330,17 +330,41 @@ terminal's normal paste (Cmd-V), which arrives as keystrokes.
 
 ## SSH agent forwarding
 
-The compose file mounts `/run/host-services/ssh-auth.sock`, which is the fixed
-path Docker Desktop for Mac exposes the host agent on. This lets you clone
-private repos without copying keys into the image. Make sure your key is loaded
-on the host first:
+The container mounts the host's SSH agent at `/ssh-agent`, so you can clone
+private repos without copying keys into the image. Where that agent is depends
+on the host, and `./dev` works it out every time it runs. `./dev up` shows what
+it found before it builds.
+
+**macOS.** Docker Desktop exposes the host agent at a fixed path inside its VM,
+`/run/host-services/ssh-auth.sock`. A socket on the Mac itself cannot be
+bind-mounted through Docker Desktop's file sharing, so `$SSH_AUTH_SOCK` plays
+no part. Make sure your key is loaded on the host first:
 
 ```sh
 ssh-add --apple-use-keychain ~/.ssh/id_ed25519
 ```
 
-On Linux hosts this path does not exist; replace that volume line with
-`${SSH_AUTH_SOCK}:/ssh-agent` instead.
+**Linux.** Whatever `$SSH_AUTH_SOCK` points at in the shell you run `./dev`
+from. Two things follow from mounting a socket file directly:
+
+- The container keeps the socket it was created with. A forwarded agent
+  (`ssh -A`) gets a new socket path with every login, and the old one goes away
+  when that session ends. The next `./dev up` sees the new path and recreates
+  the container to pick it up, which costs the tmux session. A per-user agent
+  at a fixed path, such as systemd's `ssh-agent.socket` or GNOME Keyring's,
+  avoids that.
+- The socket is only usable by its owner, so the host user needs UID 1000 to
+  match `dev`. See [the note on UID/GID](#a-note-on-uidgid).
+
+With no agent at all, `/dev/null` is mounted in its place, and ssh inside finds
+no agent, just as it would with none running.
+
+**Anything else.** Set `HOST_SSH_AUTH_SOCK` to the host-side path yourself and
+`./dev` uses that instead. Docker Desktop on Linux, for instance, wants the Mac
+path.
+
+A `docker-compose.yml` rendered before this has the Mac path written in.
+`./dev setup <name> --force` re-renders it.
 
 ## Customising
 
