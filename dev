@@ -18,6 +18,9 @@ MARK_BEGIN='# >>> extra mounts'
 MARK_END='# <<< extra mounts'
 ORCA_BEGIN='# >>> orca only'
 ORCA_END='# <<< orca only'
+# Where `setup` starts looking for a free host port for Orca, and how far.
+ORCA_PORT_BASE=16768
+ORCA_PORT_SPAN=100
 
 COMPOSE=(docker compose)
 SERVICE=dev
@@ -30,15 +33,19 @@ Usage: ./dev <command>
 
 First, once per copy of this template:
 
-  setup <name> [--with-orca | --without-orca] [--force]
+  setup <name> [--with-orca [--orca-port <port>] | --without-orca] [--force]
             Render docker-compose.yml from the template for a project called
             <name>. The name prefixes every named volume, so each project gets
             its own workspace, caches, git identity and Claude Code login.
-            --with-orca includes the Orca server (below) in the image. It is
-            stored in docker-compose.yml, so every up and rebuild keeps it.
+            --with-orca includes the Orca server (below) in the image and
+            publishes it on a host port of this project's own: the first free
+            one from 16768 up, or <port>. Both are stored in
+            docker-compose.yml, so every up and rebuild keeps them.
             --force re-renders over an existing file, carrying your `mount`
-            entries and the Orca choice across (use it after pulling template
-            changes). Add --with-orca or --without-orca to change the latter.
+            entries, the Orca choice and its port across (use it after pulling
+            template changes). The port moves only if another project's
+            container now publishes it too. Add --with-orca or --without-orca
+            to change the Orca choice.
 
 Day to day:
 
@@ -134,7 +141,19 @@ confirm_build() {
   local ok
   printf 'Build parameters, from %s:\n' "${COMPOSE_FILE#"$ROOT"/}"
   case "$(orca_setting)" in
-    true) printf '  Orca server   included\n' ;;
+    true)
+      local port clash
+      port="$(orca_host_port)"
+      printf '  Orca server   included, on host port %s\n' "${port:-(none)}"
+      # setup checked this, but another project may have been set up since.
+      if [ -n "$port" ] && PORTS_IN_USE="$(published_ports)"; then
+        clash="$(port_clash "$port" "$(project_name)")"
+        if [ -n "$clash" ]; then
+          printf '  warning:      port %s: %s, so the container may fail to start.\n' "$port" "$clash"
+          printf '                ./dev setup %s --force moves it to a free one.\n' "$(project_name)"
+        fi
+      fi
+      ;;
     false) printf '  Orca server   not included\n' ;;
     *) printf '  Orca server   not included: this file predates the setting\n' ;;
   esac
@@ -192,12 +211,85 @@ host_address() {
 
 # The host side of the published mapping for the container's 6768, read from
 # the rendered compose file so the two cannot drift apart. Not 6768 itself:
-# Orca's desktop app listens there. See docker-compose.yml.template.
+# Orca's desktop app listens there. See docker-compose.yml.template. Empty when
+# the file publishes no Orca port.
 orca_host_port() {
-  local p
-  p="$(awk -F'"' '/^[[:space:]]*-[[:space:]]*"[0-9.:]+:6768"[[:space:]]*$/ {
-         n = split($2, a, ":"); print a[n - 1]; exit }' "$COMPOSE_FILE" 2>/dev/null)"
-  printf '%s\n' "${p:-6768}"
+  awk -F'"' '/^[[:space:]]*-[[:space:]]*"[0-9.:]+:6768"[[:space:]]*$/ {
+       n = split($2, a, ":"); print a[n - 1]; exit }' "$COMPOSE_FILE" 2>/dev/null
+}
+
+# Every host port published by a container on this machine, running or
+# stopped, as "<port> <compose project>" lines; "-" for a container outside
+# compose. Stopped ones count because they take their ports back when they
+# start, and that is exactly the clash this is for. Fails when Docker does not
+# answer.
+published_ports() {
+  local ids
+  ids="$(docker ps -aq 2>/dev/null)" || return 1
+  [ -n "$ids" ] || return 0
+  # shellcheck disable=SC2086  # one argument per container id
+  docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}|{{range $p, $b := .HostConfig.PortBindings}}{{range $b}}{{.HostPort}} {{end}}{{end}}' \
+    $ids 2>/dev/null \
+    | awk -F'|' '{ n = split($2, ps, " ")
+                   for (i = 1; i <= n; i++) print ps[i], ($1 == "" ? "-" : $1) }'
+}
+
+# Why host port $1 cannot be project $2's, or nothing if it can. Reads
+# PORTS_IN_USE from published_ports. The project's own container holding it is
+# no clash; something else listening on it is, Docker or not.
+port_clash() {
+  local holder
+  holder="$(printf '%s\n' "$PORTS_IN_USE" \
+    | awk -v p="$1" -v own="$2" '$1 == p && $2 != own { print $2; exit }')"
+  if [ "$holder" = - ]; then
+    printf 'a container outside compose publishes it'
+  elif [ -n "$holder" ]; then
+    printf 'project %s publishes it too' "$holder"
+  elif printf '%s\n' "$PORTS_IN_USE" \
+         | awk -v p="$1" -v own="$2" '$1 == p && $2 == own { f = 1 } END { exit !f }'; then
+    return 0
+  elif (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null; then
+    printf 'something on this machine is listening on it'
+  fi
+}
+
+# Choose project $1's Orca host port: $2 if asked for, else $3 (what the old
+# file had) unless that now clashes, else the first free one from
+# ORCA_PORT_BASE. Sets ORCA_PORT, and ORCA_PORT_NOTE to say how it was chosen.
+choose_orca_port() {
+  # Plain strings, not an array: macOS's bash 3.2 treats an empty array as
+  # unset under `set -u`.
+  local own="$1" asked="$2" had="$3" clash="" p how="" caveat=""
+  if ! PORTS_IN_USE="$(published_ports)"; then
+    PORTS_IN_USE=""
+    caveat="Docker did not answer, so other projects' ports went unchecked"
+  fi
+  ORCA_PORT=""
+  if [ -n "$asked" ]; then
+    ORCA_PORT="$asked"
+    clash="$(port_clash "$asked" "$own")"
+    [ -z "$clash" ] || how="warning: $clash"
+  elif [ -n "$had" ]; then
+    clash="$(port_clash "$had" "$own")"
+    if [ -z "$clash" ]; then
+      ORCA_PORT="$had"
+      how="carried over"
+    else
+      how="moved from $had, where $clash; pair clients again"
+    fi
+  fi
+  if [ -z "$ORCA_PORT" ]; then
+    for p in $(seq "$ORCA_PORT_BASE" $((ORCA_PORT_BASE + ORCA_PORT_SPAN - 1))); do
+      if [ -z "$(port_clash "$p" "$own")" ]; then
+        ORCA_PORT="$p"
+        break
+      fi
+    done
+    [ -n "$ORCA_PORT" ] \
+      || die "no free port in $ORCA_PORT_BASE-$((ORCA_PORT_BASE + ORCA_PORT_SPAN - 1)); pick one with --orca-port <port>"
+  fi
+  ORCA_PORT_NOTE="$how${how:+${caveat:+; }}$caveat"
+  [ -z "$ORCA_PORT_NOTE" ] || ORCA_PORT_NOTE=" ($ORCA_PORT_NOTE)"
 }
 
 extra_mounts() {
@@ -222,18 +314,29 @@ insert_mounts() {
 
 cmd_setup() {
   local name="" force="" orca="" orca_note="" carried="" host tmp
+  local asked_port="" had_port=""
+  local usage="usage: ./dev setup <project-name> [--with-orca [--orca-port <port>] | --without-orca] [--force]"
   while [ $# -gt 0 ]; do
     case "$1" in
       --force) force=1 ;;
       --with-orca) orca=true ;;
       --without-orca) orca=false ;;
+      --orca-port)
+        [ $# -ge 2 ] || die "$usage"
+        asked_port="$2"
+        shift
+        ;;
       -*) die "unknown option: $1" ;;
-      *) [ -z "$name" ] || die "usage: ./dev setup <project-name> [--with-orca | --without-orca] [--force]"
+      *) [ -z "$name" ] || die "$usage"
          name="$1" ;;
     esac
     shift
   done
-  [ -n "$name" ] || die "usage: ./dev setup <project-name> [--with-orca | --without-orca] [--force]"
+  [ -n "$name" ] || die "$usage"
+  if [ -n "$asked_port" ]; then
+    [[ "$asked_port" =~ ^[0-9]+$ ]] && [ "$asked_port" -ge 1024 ] && [ "$asked_port" -le 65535 ] \
+      || die "--orca-port takes a port number from 1024 to 65535 (got: $asked_port)"
+  fi
   [ -f "$TEMPLATE" ] || die "missing template: $TEMPLATE"
 
   # Compose's own rule for project names, enforced here so the failure arrives
@@ -245,6 +348,7 @@ cmd_setup() {
     [ -n "$force" ] \
       || die "$COMPOSE_FILE already exists. Pass --force to re-render it (your mount entries and Orca choice are carried over)."
     carried="$(extra_mounts)"
+    had_port="$(orca_host_port)"
     # Remembered like the mounts, unless this run says otherwise. A file from
     # before the setting has nothing to carry, so say so rather than quietly
     # settling on "not included".
@@ -258,6 +362,11 @@ cmd_setup() {
     fi
   fi
   orca="${orca:-false}"
+  if [ "$orca" = true ]; then
+    choose_orca_port "$name" "$asked_port" "$had_port"
+  elif [ -n "$asked_port" ]; then
+    die "--orca-port is for a project with Orca; add --with-orca"
+  fi
 
   # Underscores are legal in a compose project name but not in a hostname.
   host="${name//_/-}"
@@ -269,7 +378,11 @@ cmd_setup() {
   local render=(-e "s/__PROJECT_NAME__/$name/g"
                 -e "s/__PROJECT_HOSTNAME__/$host/g"
                 -e "s/__WITH_ORCA__/$orca/g")
-  [ "$orca" = true ] || render+=(-e "/$ORCA_BEGIN/,/$ORCA_END/d")
+  if [ "$orca" = true ]; then
+    render+=(-e "s/__ORCA_PORT__/$ORCA_PORT/g")
+  else
+    render+=(-e "/$ORCA_BEGIN/,/$ORCA_END/d")
+  fi
 
   tmp="$COMPOSE_FILE.tmp"
   sed "${render[@]}" "$TEMPLATE" > "$tmp"
@@ -284,6 +397,7 @@ cmd_setup() {
   printf '  exchange dir : %s -> /mount\n' "${MOUNT_DIR#"$ROOT"/}"
   if [ "$orca" = true ]; then
     printf '  Orca server  : included%s\n' "$orca_note"
+    printf '  Orca port    : %s%s\n' "$ORCA_PORT" "$ORCA_PORT_NOTE"
   else
     printf '  Orca server  : not included%s\n' "$orca_note"
   fi
@@ -427,7 +541,12 @@ case "${1:-}" in
     # the advertised number changes.
     case "$addr" in
       *:*) ;;
-      *) addr="$addr:$(orca_host_port)" ;;
+      *)
+        port="$(orca_host_port)"
+        [ -n "$port" ] \
+          || die "docker-compose.yml publishes no Orca port. Re-render it: ./dev setup $(project_name) --force --with-orca && ./dev up"
+        addr="$addr:$port"
+        ;;
     esac
     echo "Advertising ws://$addr"
     # The mapping lives in docker-compose.yml; `setup --force` adds it to an

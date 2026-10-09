@@ -29,7 +29,7 @@ XDG_CONFIG_HOME=$PWD/.devcontainer/config nvim --headless +qa
 Host-side commands (run `./dev` with no arguments for the full list):
 
 ```sh
-./dev setup <name> [--with-orca | --without-orca] [--force]
+./dev setup <name> [--with-orca [--orca-port <port>] | --without-orca] [--force]
                                # render .devcontainer/docker-compose.yml from the template
 ./dev up                       # show build parameters, confirm, build if needed, start
 ./dev rebuild                  # same, but build --no-cache; keeps volumes
@@ -52,7 +52,8 @@ Several files are parsed by other files, so their format is a contract:
   line in that form. If you change the parser list, also update the expected
   count (`-lt 12`) in the Dockerfile's verification step.
 - **`docker-compose.yml.template` → `docker-compose.yml`.** `./dev setup`
-  substitutes `__PROJECT_NAME__`, `__PROJECT_HOSTNAME__` and `__WITH_ORCA__`. The rendered file
+  substitutes `__PROJECT_NAME__`, `__PROJECT_HOSTNAME__`, `__WITH_ORCA__` and
+  `__ORCA_PORT__`. The rendered file
   is gitignored and machine-specific; edit the template, never the rendered
   file. `dev` finds its own mount entries between the `# >>> extra mounts` /
   `# <<< extra mounts` markers. In a project without Orca, `setup` deletes
@@ -95,9 +96,18 @@ Several files are parsed by other files, so their format is a contract:
   `tailscale status` succeeds, otherwise LAN) and calls `orca-server start` in
   the container. `orca-server` runs `orca-ide serve` under Xvfb in tmux session
   `orca`, logs to `~/.local/state/orca-server.log`, and reads the advertised
-  endpoint and pairing URL back out of that log. The container listens on 6768
-  and the host publishes it as 16768, because Orca's desktop app already uses
-  6768. `ORCA_VERSION` in the Dockerfile pins the version.
+  endpoint and pairing URL back out of that log. The container listens on 6768.
+  The host publishes it on a per-project port, never 6768 itself, because
+  Orca's desktop app already uses 6768. `ORCA_VERSION` in the Dockerfile pins
+  the version.
+- **Orca host ports:** `setup` fills `__ORCA_PORT__` through
+  `choose_orca_port`. It takes `--orca-port` if given, else the port carried
+  over from the old file, else the first free port from 16768 up. A port
+  clashes (`port_clash`) when another compose project's container publishes it
+  (`published_ports`, which includes stopped containers) or when something not
+  belonging to this project accepts connections on it. `confirm_build` runs
+  the same check again before every build. Everything Docker-dependent is best
+  effort: `setup` still works when the daemon is down.
 
 ## Traps that shaped the design
 

@@ -52,16 +52,23 @@ services:
     # *host's* -- its Tailscale address, say -- and the host forwards to here,
     # so Tailscale never has to run inside the container. Pairing needs a token
     # either way, but if you would rather not have the port on your LAN at all,
-    # narrow this to "127.0.0.1:16768:6768" and put `tailscale serve` in front.
+    # narrow this to "127.0.0.1:<port>:6768" and put `tailscale serve` in front.
     #
-    # Host 16768, container 6768, and the difference matters: Orca's desktop app
-    # listens on 6768 itself, so a client dialling this machine on 6768 reaches
-    # that app instead of this container. It shows up as "the host is not the
-    # one that the code is for" on the client, with the desktop app reporting an
-    # unpaired device at the same moment. `./dev orca` reads the host side of
-    # this mapping and advertises it, so changing the number here is enough.
+    # The host port is per project, and `./dev setup` picks it: the first port
+    # from 16768 up that no other project's container publishes, running or
+    # stopped, and nothing else on the machine listens on. A fixed number
+    # would let only one copy of this template run Orca at a time. `setup
+    # --force` keeps the port it finds here unless it clashes, and
+    # `--orca-port <port>` sets it.
+    #
+    # Never 6768 on the host, though the container listens there: Orca's desktop
+    # app listens on 6768 itself, so a client dialling this machine on 6768
+    # reaches that app instead of this container. It shows up as "the host is
+    # not the one that the code is for" on the client, with the desktop app
+    # reporting an unpaired device at the same moment. `./dev orca` reads the
+    # host side of this mapping and advertises it.
     ports:
-      - "16768:6768"
+      - "__ORCA_PORT__:6768"
     # <<< orca only
 
     volumes:
