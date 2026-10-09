@@ -406,7 +406,7 @@ need for `rebuild`.
 ```
 ./dev orca                 # start it, advertising this machine's address
 ./dev orca 100.64.1.20     # ...or an address you name yourself
-./dev orca-url             # print the pairing URL again
+./dev orca-url             # print the pairing URL and its QR code again
 ./dev orca-log             # follow its log
 ./dev orca-stop
 ```
@@ -422,6 +422,12 @@ Left running. Pairing URL: ./dev orca-url
 Then in Orca on the client: Settings → Remote Orca Servers → Add Server, and
 paste the URL. Treat that URL like a password; each client gets its own
 revocable token.
+
+For the phone app, `./dev orca` and `./dev orca-url` also draw the URL as a QR
+code below it, so you can scan it instead of getting a few hundred characters
+onto the phone some other way. The code is about 75 columns wide. In a
+narrower terminal it is left out with a note, because a code wrapped at the
+edge does not scan. It is drawn for a dark background, light blocks on dark.
 
 **Which address, and which port.** The container's 6768 is published on this
 machine as **16768**, and `./dev orca` advertises `<this machine>:16768` — its
