@@ -59,6 +59,12 @@ Several files are parsed by other files, so their format is a contract:
   everything between `# >>> orca only` / `# <<< orca only` (the published
   port). `orca_host_port` reads the host port from a `- "NNNN:6768"` line.
   Keep the markers and that port-line format intact.
+- **Some values come from the environment at run time.** `find_ssh_agent` in
+  `dev` exports `HOST_SSH_AUTH_SOCK` before any compose command, and the
+  template interpolates it as the source of the `/ssh-agent` mount. That source
+  is Docker Desktop's fixed path on macOS, `$SSH_AUTH_SOCK` on Linux, or
+  `/dev/null` when there is no agent. Values that change between runs belong
+  here, not in `setup`.
 - **Configs are baked into the image** by `COPY` in the Dockerfile, so changes
   under `.devcontainer/config/` need `./dev rebuild`. The exception is
   `TIPS.md`, which is bind-mounted read-only to `~/.config/nvim/TIPS.md`.

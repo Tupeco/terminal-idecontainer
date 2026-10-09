@@ -102,6 +102,33 @@ orca_setting() {
 # settled in docker-compose.yml, so this is a last look rather than a question
 # that must be answered: with no terminal on stdin (a script, a pipe) it goes
 # ahead.
+# The host side of the /ssh-agent mount, exported for compose to interpolate.
+# Docker Desktop for Mac exposes the host's agent at a fixed path inside its
+# VM; a socket on the Mac itself cannot be bind-mounted through it. On Linux
+# the socket is an ordinary file wherever $SSH_AUTH_SOCK says, and that moves
+# with every login of a forwarded agent, so this is worked out on each run
+# rather than written into docker-compose.yml once. Setting HOST_SSH_AUTH_SOCK
+# yourself wins, for hosts neither guess fits (Docker Desktop on Linux uses the
+# Mac path).
+find_ssh_agent() {
+  if [ -n "${HOST_SSH_AUTH_SOCK:-}" ]; then
+    SSH_AGENT_NOTE="set by HOST_SSH_AUTH_SOCK"
+  elif [ "$(uname -s)" = Darwin ]; then
+    HOST_SSH_AUTH_SOCK=/run/host-services/ssh-auth.sock
+    SSH_AGENT_NOTE="Docker Desktop for Mac"
+  elif [ -S "${SSH_AUTH_SOCK:-}" ]; then
+    HOST_SSH_AUTH_SOCK="$SSH_AUTH_SOCK"
+    SSH_AGENT_NOTE="from \$SSH_AUTH_SOCK"
+  else
+    # Something has to be mounted, and a path that does not exist would be
+    # created by Docker as a root-owned directory. /dev/null is not a socket,
+    # so ssh inside simply finds no agent, as it would with none running.
+    HOST_SSH_AUTH_SOCK=/dev/null
+    SSH_AGENT_NOTE="none: \$SSH_AUTH_SOCK is not a socket here"
+  fi
+  export HOST_SSH_AUTH_SOCK
+}
+
 confirm_build() {
   local ok
   printf 'Build parameters, from %s:\n' "${COMPOSE_FILE#"$ROOT"/}"
@@ -112,6 +139,8 @@ confirm_build() {
   esac
   printf '  To change:    ./dev setup %s --force --with-orca | --without-orca\n' \
     "$(project_name)"
+  printf 'Host SSH agent, found on every run:\n'
+  printf '  %s (%s)\n' "$HOST_SSH_AUTH_SOCK" "$SSH_AGENT_NOTE"
   [ -t 0 ] || return 0
   read -r -p "Build with these? [y/N] " ok || ok=""
   case "$ok" in
@@ -314,6 +343,10 @@ cmd_unmount() {
   mv "$tmp" "$COMPOSE_FILE"
   printf 'Unmounted /other-mounts/%s. Run ./dev up to apply.\n' "$name"
 }
+
+# Before any compose command, so each one reads the file the way `up` did
+# rather than falling back to the template's default.
+find_ssh_agent
 
 case "${1:-}" in
   setup)
