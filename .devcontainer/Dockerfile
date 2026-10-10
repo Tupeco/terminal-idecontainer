@@ -473,7 +473,7 @@ USER ${USERNAME}
 # ---------------------------------------------------------------------------
 USER root
 ARG WITH_ORCA=false
-ARG ORCA_VERSION=1.4.223
+ARG ORCA_VERSION=1.4.224
 COPY --chmod=0755 config/bin/orca-server /usr/local/bin/
 RUN set -eux; \
     if [ "${WITH_ORCA}" != true ]; then \
