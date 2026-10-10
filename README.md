@@ -347,6 +347,12 @@ no part. Make sure your key is loaded on the host first:
 ssh-add --apple-use-keychain ~/.ssh/id_ed25519
 ```
 
+The socket there is `root:root` with mode `0660`, so the container adds `dev`
+to group 0 (`group_add` in the compose file) to be allowed to connect. A
+`docker-compose.yml` rendered before that was added makes `ssh-add` inside fail
+with "Error connecting to agent: Permission denied"; `./dev reconfigure` and
+`./dev up` fix it.
+
 **Linux.** Whatever `$SSH_AUTH_SOCK` points at in the shell you run `./dev`
 from. Two things follow from mounting a socket file directly:
 

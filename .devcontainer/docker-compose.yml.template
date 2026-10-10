@@ -36,6 +36,18 @@ services:
     # Survives client disconnects by design.
     command: ["sleep", "infinity"]
 
+    # Group 0 as a supplementary group, for the SSH agent socket. Docker
+    # Desktop for Mac creates /run/host-services/ssh-auth.sock as root:root
+    # 0660, so `dev` gets "Error connecting to agent: Permission denied" without
+    # it. Rejected: chmod/chgrp on the socket, which changes it inside Docker
+    # Desktop's VM for every container and is undone when Docker Desktop
+    # restarts; a socat relay, which is one more process to keep alive. Group 0
+    # grants nothing that matters here, since `dev` has passwordless sudo
+    # anyway. On Linux the agent socket is usually 0600 and owned by the host
+    # user, so this changes nothing there (see the UID note in README.md).
+    group_add:
+      - "0"
+
     environment:
       TERM: xterm-256color
       COLORTERM: truecolor
