@@ -439,17 +439,18 @@ For a project that needs a database, install PostgreSQL in its image:
 ./dev up
 ```
 
-Then, inside:
+`./dev up` starts the server. Then, inside:
 
 ```sh
-pg start      # creates the cluster the first time, then starts it
 psql          # connects as dev to database dev, no password
-pg stop | pg status | pg log
+pg stop | pg start | pg status | pg log
 ```
 
 The data lives in the `postgres` volume, so `./dev rebuild`, `reconfigure`
-and `up` all keep it; only `./dev nuke` deletes it. The server does not start
-by itself when the container does, so run `pg start` after `./dev up`. It runs
+and `up` all keep it; only `./dev nuke` deletes it. `./dev up` and
+`./dev rebuild` run `pg start` once the container is up, so the server is
+running whenever the container was started that way; the very first `up`
+creates the cluster. If it fails to start, `up` still succeeds and says so. It runs
 as `dev` and listens only inside the container (`localhost` and the default
 socket), with `trust` authentication: anything that can connect is you
 already. Applications that want a URL can use

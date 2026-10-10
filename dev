@@ -42,8 +42,8 @@ First, once per copy of this template:
             publishes it on a host port of this project's own: the first free
             one from 16768 up, or <port>. Both are stored in
             docker-compose.yml, so every up and rebuild keeps them.
-            --with-postgres installs PostgreSQL in the image; `pg start`
-            inside runs it, with its data in a volume that rebuilds keep.
+            --with-postgres installs PostgreSQL in the image; up starts it,
+            with its data in a volume that rebuilds keep.
             --force re-renders over an existing file, carrying your `mount`
             entries, the Orca and PostgreSQL choices and the Orca port across
             (use it after pulling template changes). The port moves only if
@@ -57,7 +57,7 @@ First, once per copy of this template:
 Day to day:
 
   up        Build if needed and start the container in the background, and
-            the Orca server too in a project set up --with-orca
+            PostgreSQL and the Orca server too where the project has them
   attach    Attach to the persistent tmux session (use this every morning)
   shell     Plain bash shell, no tmux
   clone     Clone a repo into the workspace volume: ./dev clone <git-url>
@@ -175,7 +175,7 @@ confirm_build() {
     *) printf '  Orca server   not included: this file predates the setting\n' ;;
   esac
   case "$(postgres_setting)" in
-    true) printf '  PostgreSQL    included (pg start inside)\n' ;;
+    true) printf '  PostgreSQL    included, started by up\n' ;;
     false) printf '  PostgreSQL    not included\n' ;;
     *) printf '  PostgreSQL    not included: this file predates the setting\n' ;;
   esac
@@ -434,7 +434,7 @@ cmd_setup() {
     printf '  Orca server  : not included%s\n' "$orca_note"
   fi
   if [ "$postgres" = true ]; then
-    printf '  PostgreSQL   : included%s; run `pg start` inside\n' "$postgres_note"
+    printf '  PostgreSQL   : included%s; up starts it\n' "$postgres_note"
   else
     printf '  PostgreSQL   : not included%s\n' "$postgres_note"
   fi
@@ -578,17 +578,28 @@ cmd_orca() {
   [ -z "$start_opts" ] || echo "Pairing URL, if a client needs one: ./dev orca-url"
 }
 
-# `up` and `rebuild` start Orca in a project that includes it, since a
-# recreated container comes back without it and the server is the reason the
-# project has Orca. In a subshell, because cmd_orca dies on errors, and by now
-# the container is up whatever happens to Orca: a failure here is a warning,
-# not a failed `up`. Only for "true": a file that predates the setting has no
-# Orca in its image.
-start_orca_after_up() {
-  [ "$(orca_setting)" = true ] || return 0
-  echo "Starting the Orca server..."
-  ( cmd_orca --from-up ) \
-    || echo "warning: the Orca server did not start; try ./dev orca, or see ./dev orca-log" >&2
+# `up` and `rebuild` start PostgreSQL and Orca in a project that includes
+# them, since a recreated container comes back with neither running, and each
+# is the reason the project has it. Best effort: by now the container is up
+# whatever happens to them, so a failure is a warning, not a failed `up`. Orca
+# runs in a subshell because cmd_orca dies on errors. Only for "true": a file
+# that predates a setting has neither in its image.
+#
+# PostgreSQL first, as it takes a second and an application started from the
+# shell expects it. `pg start` is safe to repeat: on a container that was
+# already running it reports the server and leaves it alone, and on the very
+# first `up` it creates the cluster. -T because `up` may run without a
+# terminal.
+start_services_after_up() {
+  if [ "$(postgres_setting)" = true ]; then
+    "${COMPOSE[@]}" exec -T "$SERVICE" bash -lc 'pg start' \
+      || echo "warning: PostgreSQL did not start; run pg start inside, or see pg log" >&2
+  fi
+  if [ "$(orca_setting)" = true ]; then
+    echo "Starting the Orca server..."
+    ( cmd_orca --from-up ) \
+      || echo "warning: the Orca server did not start; try ./dev orca, or see ./dev orca-log" >&2
+  fi
 }
 
 # Before any compose command, so each one reads the file the way `up` did
@@ -627,7 +638,7 @@ case "${1:-}" in
     cd "$DCDIR"
     "${COMPOSE[@]}" up -d --build
     echo "Container running. Attach with: ./dev attach"
-    start_orca_after_up
+    start_services_after_up
     ;;
   attach)
     require_setup
@@ -685,7 +696,7 @@ case "${1:-}" in
     cd "$DCDIR"
     "${COMPOSE[@]}" build --no-cache
     "${COMPOSE[@]}" up -d
-    start_orca_after_up
+    start_services_after_up
     ;;
   nuke)
     require_setup

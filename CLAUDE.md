@@ -103,8 +103,9 @@ Several files are parsed by other files, so their format is a contract:
   in `/etc/postgresql` would reset on every rebuild.
 - **Orca runtime:** `./dev orca` on the host works out the host's address (Tailscale if
   `tailscale status` succeeds, otherwise LAN) and calls `orca-server start` in
-  the container. `up` and `rebuild` do the same through `start_orca_after_up`
-  when `WITH_ORCA` is `"true"`, with `--no-url` and best effort: a failure
+  the container. `up` and `rebuild` do the same through
+  `start_services_after_up` when `WITH_ORCA` is `"true"`, with `--no-url`, and
+  run `pg start` when `WITH_POSTGRES` is. Both are best effort: a failure
   there warns and `up` still succeeds. `dev` runs on macOS's bash 3.2, so no
   empty arrays under `set -u`. `orca-server` runs `orca-ide serve` under Xvfb in tmux session
   `orca`, logs to `~/.local/state/orca-server.log`, and reads the advertised
