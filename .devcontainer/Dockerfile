@@ -332,6 +332,7 @@ RUN cat /tmp/bashrc.extra >> "/home/${USERNAME}/.bashrc" \
                 "/home/${USERNAME}/.config/git" \
                 "/home/${USERNAME}/.config/orca" \
                 "/home/${USERNAME}/.orca" \
+                "/home/${USERNAME}/.local/share/postgresql" \
                 "/home/${USERNAME}/.claude"
 
 # Claude Code splits its state across two locations: OAuth tokens go in
@@ -379,6 +380,48 @@ RUN set -eux; \
 # volume; the account identity lands in ~/.claude.json, linked into it above.
 RUN curl -fsSL https://claude.ai/install.sh | bash \
     && "/home/${USERNAME}/.local/bin/claude" --version
+
+# ---------------------------------------------------------------------------
+# PostgreSQL, only with --with-postgres
+#
+# Ubuntu's own package, so the major version follows the Ubuntu release (18 on
+# 26.04) and needs no extra apt repository. `pg` (config/bin/pg) runs it as
+# ${USERNAME}, with the cluster in the `postgres` volume at
+# ~/.local/share/postgresql, so the data survives rebuilds; see the comment at
+# the top of that script for why it does not use the package's own cluster.
+#
+# The package creates a cluster called main as it installs, configured in
+# /etc/postgresql and owned by the postgres user. pg_dropcluster removes it
+# again, so nothing in the image can be mistaken for where the data lives.
+# /var/run/postgresql is where this build of libpq looks for the server's
+# socket by default, so handing it to ${USERNAME} is what lets a bare `psql`
+# connect. Docker does not put a tmpfs on /run, so the directory and its owner
+# come from the image every time the container starts.
+#
+# Opt-in like Orca: `./dev setup <name> --with-postgres` writes
+# WITH_POSTGRES=true into the build args, and without it the RUN below does
+# nothing. Here, after the plugin bake and before Orca, switching it re-runs
+# only this layer and Orca's. `pg` is copied either way, so in an image without
+# PostgreSQL it says how to add it.
+# ---------------------------------------------------------------------------
+USER root
+ARG WITH_POSTGRES=false
+COPY --chmod=0755 config/bin/pg /usr/local/bin/
+RUN set -eux; \
+    if [ "${WITH_POSTGRES}" != true ]; then \
+        echo "PostgreSQL not included; ./dev reconfigure --with-postgres adds it"; \
+        exit 0; \
+    fi; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends postgresql; \
+    rm -rf /var/lib/apt/lists/*; \
+    major="$(ls /usr/lib/postgresql)"; \
+    if [ -d "/etc/postgresql/${major}/main" ]; then \
+        pg_dropcluster --stop "${major}" main; \
+    fi; \
+    chown "${USERNAME}:" /var/run/postgresql; \
+    "/usr/lib/postgresql/${major}/bin/postgres" --version
+USER ${USERNAME}
 
 # ---------------------------------------------------------------------------
 # Orca, only with --with-orca
@@ -434,7 +477,7 @@ ARG ORCA_VERSION=1.4.223
 COPY --chmod=0755 config/bin/orca-server /usr/local/bin/
 RUN set -eux; \
     if [ "${WITH_ORCA}" != true ]; then \
-        echo "Orca not included; ./dev setup <name> --force --with-orca adds it"; \
+        echo "Orca not included; ./dev reconfigure --with-orca adds it"; \
         exit 0; \
     fi; \
     case "$(dpkg --print-architecture)" in \

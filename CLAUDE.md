@@ -29,7 +29,8 @@ XDG_CONFIG_HOME=$PWD/.devcontainer/config nvim --headless +qa
 Host-side commands (run `./dev` with no arguments for the full list):
 
 ```sh
-./dev setup <name> [--with-orca [--orca-port <port>] | --without-orca] [--force]
+./dev setup <name> [--with-orca [--orca-port <port>] | --without-orca]
+                   [--with-postgres | --without-postgres] [--force]
                                # render .devcontainer/docker-compose.yml from the template
 ./dev reconfigure [same options] # setup <current name> --force, name read from the file
 ./dev up                       # show build parameters, confirm, build if needed, start
@@ -53,8 +54,8 @@ Several files are parsed by other files, so their format is a contract:
   line in that form. If you change the parser list, also update the expected
   count (`-lt 12`) in the Dockerfile's verification step.
 - **`docker-compose.yml.template` → `docker-compose.yml`.** `./dev setup`
-  substitutes `__PROJECT_NAME__`, `__PROJECT_HOSTNAME__`, `__WITH_ORCA__` and
-  `__ORCA_PORT__`. The rendered file
+  substitutes `__PROJECT_NAME__`, `__PROJECT_HOSTNAME__`, `__WITH_ORCA__`,
+  `__WITH_POSTGRES__` and `__ORCA_PORT__`. The rendered file
   is gitignored and machine-specific; edit the template, never the rendered
   file. `dev` finds its own mount entries between the `# >>> extra mounts` /
   `# <<< extra mounts` markers. In a project without Orca, `setup` deletes
@@ -81,8 +82,8 @@ Several files are parsed by other files, so their format is a contract:
 - **Build parameters are chosen at `setup` and stored** as `build.args` in the
   rendered compose file. `setup --force` carries them across, as it does
   mounts. `up` and `rebuild` take no options. They read the parameters back
-  (`orca_setting`), show them in `confirm_build`, and ask before building. With
-  no TTY on stdin they skip the question and build. A new parameter needs a
+  (`orca_setting`, `postgres_setting`), show them in `confirm_build`, and ask
+  before building. With no TTY on stdin they skip the question and build. A new parameter needs a
   placeholder in the template, flags and carry-over in `cmd_setup`, a line in
   `confirm_build`, and the usage text.
 - **Orca is opt-in** (`setup --with-orca` → `WITH_ORCA: "true"` → `ARG
@@ -93,6 +94,13 @@ Several files are parsed by other files, so their format is a contract:
   the Dockerfile default (`false`) applies. The port is published only with
   Orca, because a published port must be free on the host even with nothing
   behind it. The Orca volumes and `orca-server` are present either way.
+- **PostgreSQL is opt-in** the same way (`--with-postgres` → `ARG
+  WITH_POSTGRES`). Its step sits just before Orca's. `config/bin/pg` runs it
+  as `dev` with `initdb`/`pg_ctl`, one cluster per major version under the
+  `postgres` volume (`~/.local/share/postgresql/<major>`). The image drops the
+  package's `main` cluster and gives `/var/run/postgresql` (libpq's default
+  socket directory) to `dev`; do not switch to `pg_ctlcluster`, whose config
+  in `/etc/postgresql` would reset on every rebuild.
 - **Orca runtime:** `./dev orca` on the host works out the host's address (Tailscale if
   `tailscale status` succeeds, otherwise LAN) and calls `orca-server start` in
   the container. `orca-server` runs `orca-ide serve` under Xvfb in tmux session

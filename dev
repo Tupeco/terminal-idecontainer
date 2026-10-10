@@ -33,7 +33,8 @@ Usage: ./dev <command>
 
 First, once per copy of this template:
 
-  setup <name> [--with-orca [--orca-port <port>] | --without-orca] [--force]
+  setup <name> [--with-orca [--orca-port <port>] | --without-orca]
+               [--with-postgres | --without-postgres] [--force]
             Render docker-compose.yml from the template for a project called
             <name>. The name prefixes every named volume, so each project gets
             its own workspace, caches, git identity and Claude Code login.
@@ -41,12 +42,15 @@ First, once per copy of this template:
             publishes it on a host port of this project's own: the first free
             one from 16768 up, or <port>. Both are stored in
             docker-compose.yml, so every up and rebuild keeps them.
+            --with-postgres installs PostgreSQL in the image; `pg start`
+            inside runs it, with its data in a volume that rebuilds keep.
             --force re-renders over an existing file, carrying your `mount`
-            entries, the Orca choice and its port across (use it after pulling
-            template changes). The port moves only if another project's
-            container now publishes it too. Add --with-orca or --without-orca
-            to change the Orca choice.
+            entries, the Orca and PostgreSQL choices and the Orca port across
+            (use it after pulling template changes). The port moves only if
+            another project's container now publishes it too. Add the
+            --with-/--without- flags to change a choice.
   reconfigure [--with-orca [--orca-port <port>] | --without-orca]
+              [--with-postgres | --without-postgres]
             setup <name> --force, with <name> read from the existing
             docker-compose.yml. The same carry-over applies.
 
@@ -113,6 +117,11 @@ orca_setting() {
   awk -F'"' '/^[[:space:]]*WITH_ORCA:/ { print $2; exit }' "$COMPOSE_FILE"
 }
 
+# The same for PostgreSQL, from the WITH_POSTGRES build arg.
+postgres_setting() {
+  awk -F'"' '/^[[:space:]]*WITH_POSTGRES:/ { print $2; exit }' "$COMPOSE_FILE"
+}
+
 # Show the build parameters and ask before building. The parameters are already
 # settled in docker-compose.yml, so this is a last look rather than a question
 # that must be answered: with no terminal on stdin (a script, a pipe) it goes
@@ -164,7 +173,13 @@ confirm_build() {
     false) printf '  Orca server   not included\n' ;;
     *) printf '  Orca server   not included: this file predates the setting\n' ;;
   esac
+  case "$(postgres_setting)" in
+    true) printf '  PostgreSQL    included (pg start inside)\n' ;;
+    false) printf '  PostgreSQL    not included\n' ;;
+    *) printf '  PostgreSQL    not included: this file predates the setting\n' ;;
+  esac
   printf '  To change:    ./dev reconfigure --with-orca | --without-orca\n'
+  printf '                                  --with-postgres | --without-postgres\n'
   printf 'Host SSH agent, found on every run:\n'
   printf '  %s (%s)\n' "$HOST_SSH_AUTH_SOCK" "$SSH_AGENT_NOTE"
   [ -t 0 ] || return 0
@@ -320,13 +335,15 @@ insert_mounts() {
 
 cmd_setup() {
   local name="" force="" orca="" orca_note="" carried="" host tmp
-  local asked_port="" had_port=""
-  local usage="usage: ./dev setup <project-name> [--with-orca [--orca-port <port>] | --without-orca] [--force]"
+  local asked_port="" had_port="" postgres="" postgres_note=""
+  local usage="usage: ./dev setup <project-name> [--with-orca [--orca-port <port>] | --without-orca] [--with-postgres | --without-postgres] [--force]"
   while [ $# -gt 0 ]; do
     case "$1" in
       --force) force=1 ;;
       --with-orca) orca=true ;;
       --without-orca) orca=false ;;
+      --with-postgres) postgres=true ;;
+      --without-postgres) postgres=false ;;
       --orca-port)
         [ $# -ge 2 ] || die "$usage"
         asked_port="$2"
@@ -366,8 +383,15 @@ cmd_setup() {
         orca_note=" (the old file predates this setting; pass --with-orca to include it)"
       fi
     fi
+    # A file from before this setting simply had no PostgreSQL, so unlike Orca
+    # there is nothing to point out.
+    if [ -z "$postgres" ]; then
+      postgres="$(postgres_setting)"
+      [ -z "$postgres" ] || postgres_note=" (carried over)"
+    fi
   fi
   orca="${orca:-false}"
+  postgres="${postgres:-false}"
   if [ "$orca" = true ]; then
     choose_orca_port "$name" "$asked_port" "$had_port"
   elif [ -n "$asked_port" ]; then
@@ -383,7 +407,8 @@ cmd_setup() {
   # stop a container that has no Orca from starting.
   local render=(-e "s/__PROJECT_NAME__/$name/g"
                 -e "s/__PROJECT_HOSTNAME__/$host/g"
-                -e "s/__WITH_ORCA__/$orca/g")
+                -e "s/__WITH_ORCA__/$orca/g"
+                -e "s/__WITH_POSTGRES__/$postgres/g")
   if [ "$orca" = true ]; then
     render+=(-e "s/__ORCA_PORT__/$ORCA_PORT/g")
   else
@@ -406,6 +431,11 @@ cmd_setup() {
     printf '  Orca port    : %s%s\n' "$ORCA_PORT" "$ORCA_PORT_NOTE"
   else
     printf '  Orca server  : not included%s\n' "$orca_note"
+  fi
+  if [ "$postgres" = true ]; then
+    printf '  PostgreSQL   : included%s; run `pg start` inside\n' "$postgres_note"
+  else
+    printf '  PostgreSQL   : not included%s\n' "$postgres_note"
   fi
   if [ -n "$carried" ]; then
     printf '  carried over %d extra mount(s)\n' "$(printf '%s\n' "$carried" | grep -c .)"

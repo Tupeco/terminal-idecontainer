@@ -22,6 +22,8 @@ services:
         # the command line so every build of this project agrees, devcontainer
         # tooling included. `./dev setup <name> --force` carries it across.
         WITH_ORCA: "__WITH_ORCA__"
+        # `--with-postgres` likewise, for the PostgreSQL step in the Dockerfile.
+        WITH_POSTGRES: "__WITH_POSTGRES__"
 
     # Tagged per project as well. Each copy of this template owns its Dockerfile
     # and will drift as you add packages to it; a shared tag would mean one
@@ -100,6 +102,11 @@ services:
       - orca-state:/home/dev/.orca
       - nvim-state:/home/dev/.local/state/nvim
 
+      # PostgreSQL clusters, one directory per major version, for a project set
+      # up --with-postgres (`pg start`). Data and config together, so neither a
+      # rebuild nor `up` touches your databases; only `./dev nuke` does.
+      - postgres:/home/dev/.local/share/postgresql
+
       # Claude Code credentials and chat history, so you authenticate once
       # rather than per rebuild. See the note on ~/.claude.json in bashrc.extra:
       # this volume alone is not sufficient to keep you logged in.
@@ -151,5 +158,6 @@ volumes:
   orca-config:
   orca-state:
   nvim-state:
+  postgres:
   claude-config:
   git-config:

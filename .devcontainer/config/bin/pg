@@ -1,0 +1,121 @@
+#!/usr/bin/env bash
+# PostgreSQL inside this container, for a project set up --with-postgres.
+#
+#   pg start     create the cluster on first use, then start it
+#   pg stop
+#   pg status
+#   pg log       follow the server log
+#
+# Then plain `psql` connects as dev to database dev, over the default socket.
+#
+# Why not Ubuntu's own pg_ctlcluster and the cluster its package creates? That
+# cluster keeps its configuration in /etc/postgresql, which is part of the
+# image, and its data in /var/lib/postgresql, owned by the postgres user. A
+# volume over the data alone would pair every rebuild's fresh config with the
+# old data, and edits to postgresql.conf or pg_hba.conf would vanish on
+# rebuild. So the image drops that cluster, and this one is an ordinary initdb
+# cluster that keeps its config inside its data directory, all of it in the
+# `postgres` volume at ~/.local/share/postgresql. It runs as dev, so nothing
+# here needs sudo.
+#
+# One subdirectory per major version, because a data directory only works with
+# the major version that created it. When a rebuild brings a new major, `start`
+# finds no cluster for it and stops to say so, rather than quietly creating an
+# empty one beside your data. Moving the data across is a pg_upgrade (or
+# pg_dump and restore) with the old binaries, which the new image no longer
+# has; dump before rebuilding onto a new Ubuntu release.
+set -euo pipefail
+
+ROOT="${XDG_DATA_HOME:-$HOME/.local/share}/postgresql"
+ME="$(id -un)"
+LOG="${XDG_STATE_HOME:-$HOME/.local/state}/postgresql.log"
+
+die() { printf 'error: %s\n' "$*" >&2; exit 1; }
+
+# The highest installed major version; the image installs exactly one.
+MAJOR="$(ls /usr/lib/postgresql 2>/dev/null | sort -n | tail -n1)"
+[ -n "$MAJOR" ] && [ -x "/usr/lib/postgresql/$MAJOR/bin/pg_ctl" ] \
+  || die "PostgreSQL is not installed in this image. On the host: ./dev reconfigure --with-postgres && ./dev up"
+BIN="/usr/lib/postgresql/$MAJOR/bin"
+DATA="$ROOT/$MAJOR"
+export PATH="$BIN:$PATH"
+
+# A container that was killed leaves postmaster.pid behind in the volume, and
+# PIDs restart from 1 in the new container. If the recorded PID now belongs to
+# some other process of ours, the server refuses to start ("lock file
+# postmaster.pid already exists"), and pg_ctl counts the server as running. The
+# file is stale whenever that PID is not a postgres process.
+clear_stale_pid() {
+  local pid comm
+  [ -f "$DATA/postmaster.pid" ] || return 0
+  pid="$(head -n1 "$DATA/postmaster.pid")"
+  comm="$(cat "/proc/$pid/comm" 2>/dev/null || true)"
+  if [ "$comm" != postgres ]; then
+    rm -f "$DATA/postmaster.pid"
+  fi
+}
+
+running() { pg_ctl -D "$DATA" status >/dev/null 2>&1; }
+
+cmd_start() {
+  if [ ! -f "$DATA/PG_VERSION" ]; then
+    local old
+    old="$(ls "$ROOT" 2>/dev/null | grep -vx "$MAJOR" | sort -n | tail -n1 || true)"
+    if [ -n "$old" ] && [ -f "$ROOT/$old/PG_VERSION" ]; then
+      die "found a PostgreSQL $old cluster in $ROOT/$old, but this image has $MAJOR. Move the data across with pg_upgrade or a dump from a $old installation, or remove $ROOT/$old to start afresh."
+    fi
+    mkdir -p "$DATA"
+    # trust: listen_addresses stays at its default, localhost, so only
+    # processes in this container can connect at all, and they are all yours.
+    # Set a password and switch pg_hba.conf to scram-sha-256 if an application
+    # insists on one.
+    initdb -D "$DATA" -U "$ME" --auth=trust --encoding=UTF8 --locale=C.UTF-8 >/dev/null
+    printf 'Created a PostgreSQL %s cluster in %s\n' "$MAJOR" "$DATA"
+    local created=1
+  fi
+  clear_stale_pid
+  if running; then
+    printf 'PostgreSQL %s is already running\n' "$MAJOR"
+    return 0
+  fi
+  mkdir -p "$(dirname "$LOG")"
+  pg_ctl -D "$DATA" -l "$LOG" -w start >/dev/null \
+    || die "PostgreSQL did not start; see $LOG"
+  # So that a bare `psql` has a database to land in.
+  if [ -n "${created:-}" ]; then
+    createdb "$ME"
+  fi
+  printf 'PostgreSQL %s is running. Connect with: psql\n' "$MAJOR"
+}
+
+cmd_stop() {
+  clear_stale_pid
+  if ! running; then
+    echo "PostgreSQL is not running"
+    return 0
+  fi
+  pg_ctl -D "$DATA" -m fast -w stop >/dev/null
+  echo "PostgreSQL stopped"
+}
+
+cmd_status() {
+  if [ ! -f "$DATA/PG_VERSION" ]; then
+    printf 'No PostgreSQL %s cluster yet; `pg start` creates one\n' "$MAJOR"
+    return 3
+  fi
+  clear_stale_pid
+  if running; then
+    printf 'PostgreSQL %s is running, data in %s\n' "$MAJOR" "$DATA"
+  else
+    printf 'PostgreSQL %s is stopped, data in %s\n' "$MAJOR" "$DATA"
+    return 3
+  fi
+}
+
+case "${1:-}" in
+  start) cmd_start ;;
+  stop) cmd_stop ;;
+  status) cmd_status ;;
+  log) exec tail -F "$LOG" ;;
+  *) sed -n '2,9s/^# \{0,1\}//p' "$0"; exit 1 ;;
+esac

@@ -30,6 +30,8 @@ template](#using-this-as-a-template).
     nvim/lua/occurrences.lua  <leader><CR> occurrence highlighting
     nvim/lua/termjump.lua   gf / ctrl-click on paths in terminal buffers
     bin/hx, bin/ehx         wrappers that pin each editor to its own runtime
+    bin/pg                  runs PostgreSQL as dev, in a project set up
+                            --with-postgres
     tmux.conf               OSC 52 passthrough, sane defaults
     bashrc.extra            PATH, history persistence, `work` helper
 install-scripts/
@@ -309,6 +311,7 @@ and nothing is shared between copies of the template.
 | `cargo-registry` | `/usr/local/cargo/registry` | Crate downloads |
 | `uv-cache` | `/home/dev/.cache/uv` | Python wheel cache |
 | `nvim-state` | `/home/dev/.local/state/nvim` | Undo history, shada, shell history |
+| `postgres` | `/home/dev/.local/share/postgresql` | PostgreSQL clusters, data and config ([PostgreSQL](#postgresql)) |
 | `claude-config` | `/home/dev/.claude` | Claude Code login, settings, chat history |
 | `git-config` | `/home/dev/.config/git` | Global git config |
 
@@ -425,6 +428,47 @@ bind mount for the config directory in `docker-compose.yml`:
       - ./config/evil-helix:/home/dev/.config/evil-helix
       - ./config/nvim:/home/dev/.config/nvim
 ```
+
+## PostgreSQL
+
+For a project that needs a database, install PostgreSQL in its image:
+
+```sh
+./dev setup myproject --with-postgres     # a new project
+./dev reconfigure --with-postgres         # an existing one
+./dev up
+```
+
+Then, inside:
+
+```sh
+pg start      # creates the cluster the first time, then starts it
+psql          # connects as dev to database dev, no password
+pg stop | pg status | pg log
+```
+
+The data lives in the `postgres` volume, so `./dev rebuild`, `reconfigure`
+and `up` all keep it; only `./dev nuke` deletes it. The server does not start
+by itself when the container does, so run `pg start` after `./dev up`. It runs
+as `dev` and listens only inside the container (`localhost` and the default
+socket), with `trust` authentication: anything that can connect is you
+already. Applications that want a URL can use
+`postgresql://dev@localhost/dev`.
+
+It is Ubuntu's own package, so the major version is whatever the Ubuntu release
+ships (18 on 26.04). `pg` does not use the package's `main` cluster or
+`pg_ctlcluster`, because that cluster keeps its configuration in
+`/etc/postgresql`, inside the image, where a rebuild would reset it. `pg`
+keeps one ordinary cluster per major version, with `postgresql.conf` and
+`pg_hba.conf` alongside the data, so your edits to them persist too. If an
+image ever brings a new major version, `pg start` finds the old cluster and
+stops to say so rather than starting an empty one; dump with `pg_dumpall`
+before rebuilding onto a new Ubuntu release, since the new image no longer has
+the old binaries to run `pg_upgrade` with.
+
+`./dev stop` gives the container ten seconds, after which Postgres is killed
+rather than shut down. That is safe, as it recovers from its write-ahead log
+on the next start, but `pg stop` first is cleaner.
 
 ## Orca server (beta)
 
