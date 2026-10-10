@@ -412,6 +412,12 @@ RUN curl -fsSL https://claude.ai/install.sh | bash \
 # systemd-tmpfiles to apply the rule. The grep fails the build if the package
 # ever words its rule differently and the sed no longer matches.
 #
+# /etc/tmpfiles.d has to be created first. It belongs to the systemd package,
+# so at this point, before Orca's step installs systemd, it does not exist yet,
+# and the build failed with `cannot create /etc/tmpfiles.d/postgresql-common.conf:
+# Directory nonexistent`. When systemd arrives it adopts the directory and
+# leaves the file in it alone.
+#
 # Opt-in like Orca: `./dev setup <name> --with-postgres` writes
 # WITH_POSTGRES=true into the build args, and without it the RUN below does
 # nothing. Here, after the plugin bake and before Orca, switching it re-runs
@@ -434,6 +440,7 @@ RUN set -eux; \
         pg_dropcluster --stop "${major}" main; \
     fi; \
     chown "${USERNAME}:" /var/run/postgresql; \
+    mkdir -p /etc/tmpfiles.d; \
     sed "s|^d /run/postgresql 2775 postgres |d /run/postgresql 2775 ${USERNAME} |" \
         /usr/lib/tmpfiles.d/postgresql-common.conf > /etc/tmpfiles.d/postgresql-common.conf; \
     grep -q "^d /run/postgresql 2775 ${USERNAME} " /etc/tmpfiles.d/postgresql-common.conf; \
