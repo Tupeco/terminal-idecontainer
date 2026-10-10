@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Orca's headless server, inside this container.
 #
-#   orca-server start [pairing-address]   start it, detached
+#   orca-server start [pairing-address [--no-url]]
+#                                         start it, detached; --no-url skips
+#                                         printing the pairing URL (`./dev up`)
 #   orca-server stop
 #   orca-server status
 #   orca-server url                       print the pairing URL again
@@ -330,7 +332,12 @@ cmd_log() {
 }
 
 case "${1:-}" in
-  start) shift; cmd_start "${1:-}" ;;
+  start)
+    shift
+    quiet=""
+    [ "${2:-}" = --no-url ] && quiet=1
+    cmd_start "${1:-}" "$quiet"
+    ;;
   stop) cmd_stop ;;
   status) cmd_status ;;
   url) cmd_url ;;

@@ -56,7 +56,8 @@ First, once per copy of this template:
 
 Day to day:
 
-  up        Build if needed and start the container in the background
+  up        Build if needed and start the container in the background, and
+            the Orca server too in a project set up --with-orca
   attach    Attach to the persistent tmux session (use this every morning)
   shell     Plain bash shell, no tmux
   clone     Clone a repo into the workspace volume: ./dev clone <git-url>
@@ -517,6 +518,79 @@ cmd_unmount() {
   printf 'Unmounted /other-mounts/%s. Run ./dev up to apply.\n' "$name"
 }
 
+# `./dev orca [address]`, and what `up` runs for a project with Orca. With
+# --from-up the pairing URL is not printed: pairings live in the orca-config
+# and orca-state volumes, so clients paired before a restart reconnect without
+# it, and `./dev orca-url` shows it when you do want it. -T there as well,
+# because `up` may run without a terminal.
+cmd_orca() {
+  # Strings rather than arrays: an empty array under `set -u` is an error in
+  # bash 3.2, which is what macOS runs this script with.
+  local addr state found port start_opts="" no_tty=""
+  if [ "${1:-}" = --from-up ]; then
+    shift
+    start_opts=--no-url
+    no_tty=-T
+  fi
+  # Before working out addresses, so a project without Orca fails at once.
+  # orca-server checks again inside, which also covers a file that predates
+  # the setting.
+  [ "$(orca_setting)" != false ] \
+    || die "$(project_name) is set up without Orca. Add it: ./dev reconfigure --with-orca && ./dev up"
+  cd "$DCDIR"
+  addr="${1:-}"
+  # Already running? Say where it listens and stop there: restarting would
+  # drop any client sessions attached to it, and the advertised address is
+  # fixed at startup anyway. -T because the output is captured, and the
+  # status line is only worth printing when there is a server to describe.
+  if [ -z "$addr" ]; then
+    state="$("${COMPOSE[@]}" exec -T "$SERVICE" bash -lc 'orca-server status' 2>/dev/null || true)"
+    case "$state" in
+      running*)
+        printf '%s\n' "$state"
+        echo "Left running. Pairing URL: ./dev orca-url"
+        return 0
+        ;;
+    esac
+    found="$(host_address || true)"
+    [ -n "$found" ] \
+      || die "could not work out this machine's address; pass one: ./dev orca <address>"
+    addr="${found%% *}"
+    echo "Using $addr, this machine's ${found#* } address. Pass one to override."
+  fi
+  # An address without a port gets the published one. `orca serve` honours a
+  # host:port pairing address, so the container keeps its own 6768 and only
+  # the advertised number changes.
+  case "$addr" in
+    *:*) ;;
+    *)
+      port="$(orca_host_port)"
+      [ -n "$port" ] \
+        || die "docker-compose.yml publishes no Orca port. Re-render it: ./dev reconfigure --with-orca && ./dev up"
+      addr="$addr:$port"
+      ;;
+  esac
+  echo "Advertising ws://$addr"
+  # The mapping lives in docker-compose.yml; `setup --force` adds it to an
+  # older rendering.
+  "${COMPOSE[@]}" exec ${no_tty:+"$no_tty"} "$SERVICE" bash -lc "orca-server start '$addr' $start_opts" \
+    || return 1
+  [ -z "$start_opts" ] || echo "Pairing URL, if a client needs one: ./dev orca-url"
+}
+
+# `up` and `rebuild` start Orca in a project that includes it, since a
+# recreated container comes back without it and the server is the reason the
+# project has Orca. In a subshell, because cmd_orca dies on errors, and by now
+# the container is up whatever happens to Orca: a failure here is a warning,
+# not a failed `up`. Only for "true": a file that predates the setting has no
+# Orca in its image.
+start_orca_after_up() {
+  [ "$(orca_setting)" = true ] || return 0
+  echo "Starting the Orca server..."
+  ( cmd_orca --from-up ) \
+    || echo "warning: the Orca server did not start; try ./dev orca, or see ./dev orca-log" >&2
+}
+
 # Before any compose command, so each one reads the file the way `up` did
 # rather than falling back to the template's default.
 find_ssh_agent
@@ -553,6 +627,7 @@ case "${1:-}" in
     cd "$DCDIR"
     "${COMPOSE[@]}" up -d --build
     echo "Container running. Attach with: ./dev attach"
+    start_orca_after_up
     ;;
   attach)
     require_setup
@@ -572,48 +647,8 @@ case "${1:-}" in
     ;;
   orca)
     require_setup
-    # Before working out addresses, so a project without Orca fails at once.
-    # orca-server checks again inside, which also covers a file that predates
-    # the setting.
-    [ "$(orca_setting)" != false ] \
-      || die "$(project_name) is set up without Orca. Add it: ./dev reconfigure --with-orca && ./dev up"
-    cd "$DCDIR"
-    addr="${2:-}"
-    # Already running? Say where it listens and stop there: restarting would
-    # drop any client sessions attached to it, and the advertised address is
-    # fixed at startup anyway. -T because the output is captured, and the
-    # status line is only worth printing when there is a server to describe.
-    if [ -z "$addr" ]; then
-      state="$("${COMPOSE[@]}" exec -T "$SERVICE" bash -lc 'orca-server status' 2>/dev/null || true)"
-      case "$state" in
-        running*)
-          printf '%s\n' "$state"
-          echo "Left running. Pairing URL: ./dev orca-url"
-          exit 0
-          ;;
-      esac
-      found="$(host_address || true)"
-      [ -n "$found" ] \
-        || die "could not work out this machine's address; pass one: ./dev orca <address>"
-      addr="${found%% *}"
-      echo "Using $addr, this machine's ${found#* } address. Pass one to override."
-    fi
-    # An address without a port gets the published one. `orca serve` honours a
-    # host:port pairing address, so the container keeps its own 6768 and only
-    # the advertised number changes.
-    case "$addr" in
-      *:*) ;;
-      *)
-        port="$(orca_host_port)"
-        [ -n "$port" ] \
-          || die "docker-compose.yml publishes no Orca port. Re-render it: ./dev reconfigure --with-orca && ./dev up"
-        addr="$addr:$port"
-        ;;
-    esac
-    echo "Advertising ws://$addr"
-    # The mapping lives in docker-compose.yml; `setup --force` adds it to an
-    # older rendering.
-    "${COMPOSE[@]}" exec "$SERVICE" bash -lc "orca-server start '$addr'"
+    shift
+    cmd_orca "$@"
     ;;
   orca-url)
     require_setup
@@ -650,6 +685,7 @@ case "${1:-}" in
     cd "$DCDIR"
     "${COMPOSE[@]}" build --no-cache
     "${COMPOSE[@]}" up -d
+    start_orca_after_up
     ;;
   nuke)
     require_setup

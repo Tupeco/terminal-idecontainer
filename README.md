@@ -504,6 +504,14 @@ need for `rebuild`.
 ./dev orca-update          # install the latest release and restart on it
 ```
 
+`./dev up` and `./dev rebuild` start it as well, since a recreated container
+comes back without it. They advertise the same address `./dev orca` would pick
+and do not print the pairing URL, because clients paired before keep their
+pairing across restarts; `./dev orca-url` prints it when a new client needs
+it. If Orca fails to start there, `up` still succeeds and says so. To
+advertise an address of your own, `./dev orca-stop && ./dev orca <address>`
+after `up`.
+
 `./dev orca` on a server that is already running says where it listens and
 leaves it alone:
 
