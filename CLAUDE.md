@@ -100,7 +100,12 @@ Several files are parsed by other files, so their format is a contract:
   `postgres` volume (`~/.local/share/postgresql/<major>`). The image drops the
   package's `main` cluster and gives `/var/run/postgresql` (libpq's default
   socket directory) to `dev`; do not switch to `pg_ctlcluster`, whose config
-  in `/etc/postgresql` would reset on every rebuild.
+  in `/etc/postgresql` would reset on every rebuild. Giving it to `dev` takes a
+  `chown` *and* an override of the package's tmpfiles rule in
+  `/etc/tmpfiles.d/postgresql-common.conf`. Any later `systemd-tmpfiles
+  --create` re-applies the package's rule. systemd's postinst runs one, and
+  systemd arrives with Orca's dependencies. Without the override the
+  directory reverts to `postgres` and `pg start` fails.
 - **Orca runtime:** `./dev orca` on the host works out the host's address (Tailscale if
   `tailscale status` succeeds, otherwise LAN) and calls `orca-server start` in
   the container. `up` and `rebuild` do the same through

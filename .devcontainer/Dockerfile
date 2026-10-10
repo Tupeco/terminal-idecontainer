@@ -398,6 +398,20 @@ RUN curl -fsSL https://claude.ai/install.sh | bash \
 # connect. Docker does not put a tmpfs on /run, so the directory and its owner
 # come from the image every time the container starts.
 #
+# The chown alone did not last, though. The package also ships a tmpfiles rule
+# (`d /run/postgresql 2775 postgres postgres`), and any later
+# `systemd-tmpfiles --create` applies it again: systemd's own postinst runs
+# one, and systemd arrives as a dependency in Orca's step below. The directory
+# came back owned by postgres, and `pg start` failed with `could not create
+# lock file "/var/run/postgresql/.s.PGSQL.5432.lock": Permission denied`. A
+# copy of the package's file in /etc/tmpfiles.d, under the same name, replaces
+# it for every later run (also one from a systemd upgrade inside a running
+# container). Only the owner changes; the group stays postgres, which is what
+# the chown leaves too, and avoids guessing the name of the group at USER_GID.
+# The chown is still needed: without Orca the image may have no
+# systemd-tmpfiles to apply the rule. The grep fails the build if the package
+# ever words its rule differently and the sed no longer matches.
+#
 # Opt-in like Orca: `./dev setup <name> --with-postgres` writes
 # WITH_POSTGRES=true into the build args, and without it the RUN below does
 # nothing. Here, after the plugin bake and before Orca, switching it re-runs
@@ -420,6 +434,9 @@ RUN set -eux; \
         pg_dropcluster --stop "${major}" main; \
     fi; \
     chown "${USERNAME}:" /var/run/postgresql; \
+    sed "s|^d /run/postgresql 2775 postgres |d /run/postgresql 2775 ${USERNAME} |" \
+        /usr/lib/tmpfiles.d/postgresql-common.conf > /etc/tmpfiles.d/postgresql-common.conf; \
+    grep -q "^d /run/postgresql 2775 ${USERNAME} " /etc/tmpfiles.d/postgresql-common.conf; \
     "/usr/lib/postgresql/${major}/bin/postgres" --version
 USER ${USERNAME}
 
