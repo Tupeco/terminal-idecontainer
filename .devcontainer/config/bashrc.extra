@@ -22,6 +22,18 @@ export HISTCONTROL=ignoreboth:erasedups
 shopt -s histappend
 mkdir -p "$(dirname "$HISTFILE")"
 
+# Group-writable by default, for unix sockets that a host process has to
+# connect to. Connecting needs write permission on the socket, and bind()
+# creates it with 0777 minus the umask, so under the usual 022 nginx on the host
+# gets r-x and "Permission denied". A default ACL on the directory does not get
+# round this: the kernel applies the umask to a socket itself, and the ACL mask
+# that results is r-x as well (measured). With 002, a socket in a setgid
+# directory whose group is nginx's comes out rwx for that group, and nothing has
+# to be chowned after every restart. See "Serving to the host over a unix
+# socket" in README.md. The cost is that other files become writable by your own
+# group too, which in a single-user container is nobody else.
+umask 002
+
 alias ll='ls -lah --color=auto'
 alias hxr='hx .'
 alias ehxr='ehx .'

@@ -141,6 +141,45 @@ check off, on the grounds that this is a single-user container where every
 mounted path is deliberately yours. Narrow it to specific paths there if you
 would rather.
 
+### Serving to the host over a unix socket
+
+To try a service from the container behind nginx (or another reverse proxy) on
+the host, bind it to a unix socket in a mounted directory. Two things make
+that work without a `chown`/`chmod` after every restart.
+
+**A setgid directory owned by the proxy's group, made once on the host:**
+
+```sh
+sudo install -d -o "$USER" -g www-data -m 2775 /srv/devsock/myproject
+./dev mount /srv/devsock/myproject sock     # -> /other-mounts/sock
+./dev up
+```
+
+The setgid bit makes every file created in the directory take its group, here
+`www-data` (Debian and Ubuntu; `nginx` on Fedora and Arch, `http` for some
+packages). Point nginx at it as usual:
+`proxy_pass http://unix:/srv/devsock/myproject/app.sock;`.
+
+**A group-writable umask in the container.** Connecting to a socket needs
+write permission on it, and `bind()` creates it with the process's umask
+applied. Container shells set `umask 002`, so a socket made from one comes out
+`srwxrwxr-x dev:www-data` and the proxy can connect. A process started some
+other way, such as a non-interactive `docker exec`, does not read
+`.bashrc`; run `umask 002` there first. A default ACL on the directory is not a
+substitute: the kernel applies the umask to sockets regardless, and the
+resulting ACL mask withholds write just the same.
+
+Keep the directory **outside your home directory**. The proxy needs execute
+permission on every directory above the socket, and Ubuntu has created home
+directories `750` since 21.04, so a socket under `~/project/mount/` is refused
+whatever its own mode. That is why this uses `./dev mount` rather than
+`<repo>/mount`.
+
+Remove a stale socket before binding again, or `bind()` fails with "Address
+already in use"; many servers do this themselves. All of this needs a Linux
+host. Docker Desktop's file sharing on a Mac does not carry a working socket
+from its VM to macOS, so there publish a TCP port instead.
+
 ## Daily use
 
 ```sh
