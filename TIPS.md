@@ -115,6 +115,14 @@ somewhere new and silently leaves the original alone. See
 | `:RustStatus` | What rust-analyzer has loaded — crates, and their dependencies |
 | `:Inspect` | Which highlight group is colouring the thing under the cursor |
 
+**Having the code explained**
+
+| | |
+|---|---|
+| `:Walkthrough` | Claude Code tours this file aloud, highlighting as it goes |
+| `:Walkthrough <topic>` / `:'<,'>Walkthrough` | The same, for a topic or the selected lines |
+| `:WalkthroughClear` | Remove the walkthrough highlight |
+
 ## Working in a project
 
 How the editor is laid out and how to move around it.
@@ -1072,6 +1080,33 @@ trade occurrence highlighting for the ability to jump to a reference. Plugin
 windows that map `<CR>` buffer-locally — neo-tree, the diffview panels — are
 unaffected, because buffer-local mappings win. It is specifically the built-in
 behaviours that lose.
+
+## Narrated walkthroughs
+
+`:Walkthrough` opens Claude Code in a split on the right and gives it a
+prompt. Claude plans a handful of stops, then for each one highlights the
+lines in your code window (never in its own terminal) and explains them. With
+the narrator (a project set up `--with-narrator`; see README.md) the
+explanation is spoken in the player page, which you open from
+`./dev narrator-url` on the host. Without it, the explanation appears in
+Claude's chat.
+
+Claude reaches the editor through nvim-mcp, which connects to the Neovim
+whose working directory is in the same git repository as Claude's. So start
+`nvim` in the project. A Neovim started *after* Claude is not connected
+automatically; Claude can still find it with nvim-mcp's `get_targets` and
+`connect` tools, and the prompt tells it to.
+
+While it talks:
+
+- **Pause** in the player holds the voice, and Claude waits with it, so you
+  can read for as long as you like.
+- **Skip** cuts the current stop short and goes on to the next.
+- **Stop** ends the walkthrough. Claude stops and asks you how to continue,
+  so typing a follow-up question into its pane works too.
+
+The tool calls are visible in Claude's pane. If the highlight lands somewhere
+odd, `:WalkthroughClear` removes it, and the next stop moves it anyway.
 
 ## Which tool for which job
 

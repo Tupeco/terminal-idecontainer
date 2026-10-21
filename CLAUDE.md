@@ -19,7 +19,7 @@ through a bind mount such as `/mount`. From there you cannot build or start the
 image, so validate changes locally:
 
 ```sh
-bash -n dev .devcontainer/config/bin/orca-server install-scripts/install.sh
+bash -n dev .devcontainer/config/bin/orca-server .devcontainer/config/bin/narrator install-scripts/install.sh
 
 # Load this checkout's Neovim config instead of the copy baked into the image
 # (~/.config/nvim is a copy, not a link, so editing the repo does not change it)
@@ -30,13 +30,15 @@ Host-side commands (run `./dev` with no arguments for the full list):
 
 ```sh
 ./dev setup <name> [--with-orca [--orca-port <port>] | --without-orca]
-                   [--with-postgres | --without-postgres] [--force]
+                   [--with-postgres | --without-postgres]
+                   [--with-narrator [--narrator-port <port>] | --without-narrator] [--force]
                                # render .devcontainer/docker-compose.yml from the template
 ./dev reconfigure [same options] # setup <current name> --force, name read from the file
 ./dev up                       # show build parameters, confirm, build if needed, start
 ./dev rebuild                  # same, but build --no-cache; keeps volumes
 ./dev attach                   # tmux session 'main' inside the container
 ./dev orca [addr] | orca-url | orca-log | orca-stop | orca-update
+./dev narrator | narrator-url | narrator-log
 ./dev mount <host-path> <name> | unmount <name>   # then ./dev up (recreates the container)
 ```
 
@@ -55,13 +57,18 @@ Several files are parsed by other files, so their format is a contract:
   count (`-lt 12`) in the Dockerfile's verification step.
 - **`docker-compose.yml.template` → `docker-compose.yml`.** `./dev setup`
   substitutes `__PROJECT_NAME__`, `__PROJECT_HOSTNAME__`, `__WITH_ORCA__`,
-  `__WITH_POSTGRES__` and `__ORCA_PORT__`. The rendered file
+  `__WITH_POSTGRES__`, `__WITH_NARRATOR__`, `__ORCA_PORT__` and
+  `__NARRATOR_PORT__`. The rendered file
   is gitignored and machine-specific; edit the template, never the rendered
   file. `dev` finds its own mount entries between the `# >>> extra mounts` /
   `# <<< extra mounts` markers. In a project without Orca, `setup` deletes
   everything between `# >>> orca only` / `# <<< orca only` (the published
-  port). `orca_host_port` reads the host port from a `- "NNNN:6768"` line.
-  Keep the markers and that port-line format intact.
+  port), likewise `# >>> narrator only` / `# <<< narrator only` without the
+  narrator, and the `ports:` key between `# >>> ports key` / `# <<< ports key`
+  when neither is left (an empty key is invalid, two keys a duplicate).
+  `host_port_for` reads a host port from a `- "NNNN:6768"` (Orca) or
+  `- "NNNN:6769"` (narrator) line. Keep the markers and that port-line format
+  intact.
 - **Some values come from the environment at run time.** `find_ssh_agent` in
   `dev` exports `HOST_SSH_AUTH_SOCK` before any compose command, and the
   template interpolates it as the source of the `/ssh-agent` mount. That source
@@ -82,7 +89,8 @@ Several files are parsed by other files, so their format is a contract:
 - **Build parameters are chosen at `setup` and stored** as `build.args` in the
   rendered compose file. `setup --force` carries them across, as it does
   mounts. `up` and `rebuild` take no options. They read the parameters back
-  (`orca_setting`, `postgres_setting`), show them in `confirm_build`, and ask
+  (`orca_setting`, `postgres_setting`, `narrator_setting`), show them in
+  `confirm_build`, and ask
   before building. With no TTY on stdin they skip the question and build. A new parameter needs a
   placeholder in the template, flags and carry-over in `cmd_setup`, a line in
   `confirm_build`, and the usage text.
@@ -106,6 +114,21 @@ Several files are parsed by other files, so their format is a contract:
   --create` re-applies the package's rule. systemd's postinst runs one, and
   systemd arrives with Orca's dependencies. Without the override the
   directory reverts to `postgres` and `pg start` fails.
+- **The narrator is opt-in** too (`--with-narrator` → `ARG WITH_NARRATOR`),
+  for `:Walkthrough` (`config/nvim/lua/walkthrough.lua`). Its step sits just
+  before PostgreSQL's. It builds nvim-mcp with cargo and installs
+  `config/narrator/` (a Kokoro TTS MCP server, `narrator.py`, plus its browser
+  player) into `/opt/narrator`. Audio leaves the container only through that
+  browser page, on container port 6769, which is published per project from
+  16868 up, chosen by `choose_port` the same way as Orca's. The MCP endpoint
+  `/mcp` on that port refuses non-loopback clients, and the player needs the
+  token from `narrator url-path`. `bashrc.extra` registers both MCP servers
+  with Claude Code (user scope, so in the `claude-config` volume), because a
+  build-time entry would never reach an existing volume. `NVIM_MCP_VERSION`
+  and the `linw1995/nvim-mcp` plugin `tag` in `init.lua` must match: the two
+  halves agree on the socket name `/tmp/nvim-mcp.<root, / as %>.<pid>.sock`,
+  and upstream has changed it since v0.7.2. `up` runs `narrator start` through
+  `start_services_after_up`, best effort.
 - **Orca runtime:** `./dev orca` on the host works out the host's address (Tailscale if
   `tailscale status` succeeds, otherwise LAN) and calls `orca-server start` in
   the container. `up` and `rebuild` do the same through
