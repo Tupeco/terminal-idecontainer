@@ -325,11 +325,20 @@ COPY --chown=${USER_UID}:${USER_GID} config/bashrc.extra /tmp/bashrc.extra
 # Seeding happens once, when the volume is first created, so a project whose
 # volumes predate this needs `docker volume rm <project>_orca-config
 # <project>_orca-state` (they hold only pairings) as well as a rebuild.
+#
+# The uv cache hit the same trap and went unnoticed for a while, because
+# nothing fails until you use it: `uv pip install` died with "Could not
+# acquire lock ... Permission denied (os error 13) at path
+# /home/dev/.cache/uv/.tmp...". The volume holds only downloaded wheels, so for
+# a volume that predates the fix, `docker volume rm <project>_uv-cache` (with
+# the container stopped) loses nothing; `sudo chown dev: ~/.cache/uv` inside
+# the container fixes it in place.
 RUN cat /tmp/bashrc.extra >> "/home/${USERNAME}/.bashrc" \
     && rm /tmp/bashrc.extra \
     && git lfs install --skip-repo \
     && mkdir -p "/home/${USERNAME}/src" \
                 "/home/${USERNAME}/.config/git" \
+                "/home/${USERNAME}/.cache/uv" \
                 "/home/${USERNAME}/.config/orca" \
                 "/home/${USERNAME}/.orca" \
                 "/home/${USERNAME}/.local/share/postgresql" \
