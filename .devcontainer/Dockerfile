@@ -325,11 +325,20 @@ COPY --chown=${USER_UID}:${USER_GID} config/bashrc.extra /tmp/bashrc.extra
 # Seeding happens once, when the volume is first created, so a project whose
 # volumes predate this needs `docker volume rm <project>_orca-config
 # <project>_orca-state` (they hold only pairings) as well as a rebuild.
+#
+# The uv cache hit the same trap and went unnoticed for a while, because
+# nothing fails until you use it: `uv pip install` died with "Could not
+# acquire lock ... Permission denied (os error 13) at path
+# /home/dev/.cache/uv/.tmp...". The volume holds only downloaded wheels, so for
+# a volume that predates the fix, `docker volume rm <project>_uv-cache` (with
+# the container stopped) loses nothing; `sudo chown dev: ~/.cache/uv` inside
+# the container fixes it in place.
 RUN cat /tmp/bashrc.extra >> "/home/${USERNAME}/.bashrc" \
     && rm /tmp/bashrc.extra \
     && git lfs install --skip-repo \
     && mkdir -p "/home/${USERNAME}/src" \
                 "/home/${USERNAME}/.config/git" \
+                "/home/${USERNAME}/.cache/uv" \
                 "/home/${USERNAME}/.config/orca" \
                 "/home/${USERNAME}/.orca" \
                 "/home/${USERNAME}/.local/share/postgresql" \
@@ -382,6 +391,72 @@ RUN curl -fsSL https://claude.ai/install.sh | bash \
     && "/home/${USERNAME}/.local/bin/claude" --version
 
 # ---------------------------------------------------------------------------
+# Narrated walkthroughs, only with --with-narrator
+#
+# Two MCP servers for Claude Code, which `:Walkthrough` in Neovim puts to
+# work (config/nvim/lua/walkthrough.lua): nvim-mcp drives the editor you are
+# in, and the narrator speaks. The narrator synthesises speech here, with
+# Kokoro, and plays it in a browser tab on a published port, because the
+# container has no sound device and no one way of getting one to the Mac, a
+# Linux host and a phone over Tailscale alike. config/narrator/narrator.py
+# explains the shape; `narrator` (config/bin/narrator) runs it, and `./dev up`
+# starts it. bashrc.extra registers both servers with Claude Code.
+#
+# nvim-mcp is built with cargo because upstream publishes no release binaries.
+# A throwaway CARGO_HOME keeps root out of ${CARGO_HOME}/registry, which the
+# cargo-registry volume is seeded from: root-owned crates there would be the
+# Permission denied trap described at the Rust step. NVIM_MCP_VERSION must
+# match the plugin's tag in init.lua; the two halves agree on a socket name
+# that upstream has changed since.
+#
+# Kokoro rather than Piper: noticeably more natural, at about 0.67 s of CPU per
+# second of speech with the int8 model on a Docker Desktop VM on Apple silicon
+# (measured), which the narrator hides by synthesising the next sentence while
+# the current one plays. int8 rather than the full model: 114 MB instead of
+# 326 MB, and the difference is hard to hear. The model is baked in, so
+# nothing is downloaded at run time. Note the release tag and the file names
+# disagree upstream: the v1.0 model files are published under
+# model-files-v1.1.
+#
+# The smoke test synthesises a word, which proves onnxruntime and the bundled
+# espeak-ng both load on this architecture -- an import alone would not.
+#
+# Before PostgreSQL and Orca, so switching it re-runs those two cheap steps
+# and not the plugin bake. `narrator` is copied either way, so in an image
+# without it the command says how to add it.
+# ---------------------------------------------------------------------------
+USER root
+ARG WITH_NARRATOR=false
+ARG NVIM_MCP_VERSION=0.7.2
+ARG KOKORO_ONNX_VERSION=0.6.1
+ARG MCP_SDK_VERSION=2.3.0
+ARG KOKORO_MODEL_RELEASE=model-files-v1.1
+ARG KOKORO_MODEL_FILE=kokoro-v1.0.int8.onnx
+ARG KOKORO_VOICES_FILE=voices-v1.0.bin
+COPY --chmod=0755 config/bin/narrator /usr/local/bin/
+COPY config/narrator/ /opt/narrator/app/
+RUN set -eux; \
+    if [ "${WITH_NARRATOR}" != true ]; then \
+        echo "Narrator not included; ./dev reconfigure --with-narrator adds it"; \
+        exit 0; \
+    fi; \
+    CARGO_HOME=/tmp/cargo-nvim-mcp cargo install --locked --root /usr/local "nvim-mcp@${NVIM_MCP_VERSION}"; \
+    rm -rf /tmp/cargo-nvim-mcp; \
+    nvim-mcp --version; \
+    uv venv /opt/narrator/venv --python "${PYTHON_VERSION}"; \
+    UV_NO_CACHE=1 uv pip install --python /opt/narrator/venv/bin/python \
+        "kokoro-onnx==${KOKORO_ONNX_VERSION}" "mcp==${MCP_SDK_VERSION}"; \
+    mkdir -p /opt/narrator/models; \
+    base="https://github.com/thewh1teagle/kokoro-onnx/releases/download/${KOKORO_MODEL_RELEASE}"; \
+    curl -fsSL -o /opt/narrator/models/kokoro.onnx "${base}/${KOKORO_MODEL_FILE}"; \
+    curl -fsSL -o /opt/narrator/models/voices.bin "${base}/${KOKORO_VOICES_FILE}"; \
+    /opt/narrator/venv/bin/python -I -c "from kokoro_onnx import Kokoro; \
+        s, r = Kokoro('/opt/narrator/models/kokoro.onnx', '/opt/narrator/models/voices.bin').create('Ready.', voice='af_heart'); \
+        assert len(s) > r // 10, len(s); print('narrator smoke test:', round(len(s) / r, 2), 's')"; \
+    chmod -R a+rX /opt/narrator
+USER ${USERNAME}
+
+# ---------------------------------------------------------------------------
 # PostgreSQL, only with --with-postgres
 #
 # Ubuntu's own package, so the major version follows the Ubuntu release (18 on
@@ -421,7 +496,8 @@ RUN curl -fsSL https://claude.ai/install.sh | bash \
 # Opt-in like Orca: `./dev setup <name> --with-postgres` writes
 # WITH_POSTGRES=true into the build args, and without it the RUN below does
 # nothing. Here, after the plugin bake and before Orca, switching it re-runs
-# only this layer and Orca's. `pg` is copied either way, so in an image without
+# only this layer and Orca's. (The narrator's step sits just before this one,
+# for the same reason.) `pg` is copied either way, so in an image without
 # PostgreSQL it says how to add it.
 # ---------------------------------------------------------------------------
 USER root

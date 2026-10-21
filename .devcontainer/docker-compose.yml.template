@@ -24,6 +24,8 @@ services:
         WITH_ORCA: "__WITH_ORCA__"
         # `--with-postgres` likewise, for the PostgreSQL step in the Dockerfile.
         WITH_POSTGRES: "__WITH_POSTGRES__"
+        # `--with-narrator` likewise, for narrated walkthroughs.
+        WITH_NARRATOR: "__WITH_NARRATOR__"
 
     # Tagged per project as well. Each copy of this template owns its Dockerfile
     # and will drift as you add packages to it; a shared tag would mean one
@@ -56,10 +58,16 @@ services:
       # The host's SSH agent, mounted here by the /ssh-agent volume below.
       SSH_AUTH_SOCK: /ssh-agent
 
-    # Everything between these two markers exists only for Orca, and
-    # `./dev setup` leaves it out of a project set up without Orca. A host port
-    # published with nothing behind it still has to be free, so keeping it would
-    # let a port Orca never uses stop the container from starting.
+    # Published ports, for Orca and the narrator. Each one's entry sits between
+    # markers of its own, and `./dev setup` leaves it out of a project set up
+    # without that feature: a host port published with nothing behind it still
+    # has to be free, so keeping it would let a port nothing uses stop the
+    # container from starting. The `ports:` key has markers too, and goes when
+    # both entries do; a key with no entries is not valid compose, and giving
+    # each block its own key would be a duplicate key.
+    # >>> ports key
+    ports:
+    # <<< ports key
     # >>> orca only
     # Orca's headless server, when you start it with `./dev orca`. Published on
     # every interface on purpose: the address a remote client pairs with is the
@@ -81,9 +89,19 @@ services:
     # not the one that the code is for" on the client, with the desktop app
     # reporting an unpaired device at the same moment. `./dev orca` reads the
     # host side of this mapping and advertises it.
-    ports:
       - "__ORCA_PORT__:6768"
     # <<< orca only
+    # >>> narrator only
+    # The narrator's player page, for a project set up --with-narrator: open
+    # the address `./dev narrator-url` prints in any browser that should do
+    # the listening. On every interface for the same reason as Orca's, so a
+    # phone over Tailscale can listen too; the page needs a token, and the MCP
+    # endpoint on the same port answers only the container itself. Per
+    # project like Orca's: the first free port from 16868 up, or
+    # `--narrator-port <port>`. Narrow it to "127.0.0.1:<port>:6769" if only
+    # this machine will ever listen.
+      - "__NARRATOR_PORT__:6769"
+    # <<< narrator only
 
     volumes:
       # Source lives in a named volume, not a bind mount. On macOS this avoids

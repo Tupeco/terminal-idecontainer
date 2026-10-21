@@ -62,6 +62,33 @@ _link_claude_json() {
 }
 _link_claude_json
 
+# Register the walkthrough MCP servers with Claude Code, in an image that has
+# them (a project set up --with-narrator): nvim-mcp, which drives the Neovim
+# you are working in, and the narrator, which speaks through the browser
+# player. See "Narrated walkthroughs" in README.md.
+#
+# Here rather than in the Dockerfile for the same reason as the link above:
+# user-scope servers live in ~/.claude.json, which is in the claude-config
+# volume, and the image only seeds that volume the first time it is created. A
+# project that gains the narrator later would never see a build-time entry.
+# Checked with jq so a shell that has nothing to do does not pay for starting
+# `claude` -- which is what makes running this on every shell affordable. An
+# entry you remove with `claude mcp remove` comes back on the next shell; take
+# the narrator out with `./dev reconfigure --without-narrator` instead.
+_register_walkthrough_mcp() {
+  local cfg="$HOME/.claude.json"
+  command -v claude >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 || return 0
+  if command -v nvim-mcp >/dev/null 2>&1 \
+      && ! jq -e '.mcpServers.nvim' "$cfg" >/dev/null 2>&1; then
+    claude mcp add -s user nvim -- nvim-mcp --connect auto >/dev/null 2>&1 || true
+  fi
+  if command -v narrator >/dev/null 2>&1 && [ -x /opt/narrator/venv/bin/python ] \
+      && ! jq -e '.mcpServers.narrator' "$cfg" >/dev/null 2>&1; then
+    claude mcp add -s user --transport http narrator http://127.0.0.1:6769/mcp >/dev/null 2>&1 || true
+  fi
+}
+_register_walkthrough_mcp
+
 # Activate a project venv if one exists in the current directory.
 venv() {
   if [ -f .venv/bin/activate ]; then

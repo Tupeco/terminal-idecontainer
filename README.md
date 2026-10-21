@@ -29,9 +29,13 @@ template](#using-this-as-a-template).
     nvim/lua/devtips.lua    renders TIPS.md as `:Tips` and the startup screen
     nvim/lua/occurrences.lua  <leader><CR> occurrence highlighting
     nvim/lua/termjump.lua   gf / ctrl-click on paths in terminal buffers
+    nvim/lua/walkthrough.lua  :Walkthrough, and the highlight Claude moves
     bin/hx, bin/ehx         wrappers that pin each editor to its own runtime
     bin/pg                  runs PostgreSQL as dev, in a project set up
                             --with-postgres
+    bin/narrator            runs the narrator, in a project set up
+                            --with-narrator
+    narrator/               the narrator: TTS MCP server and its player page
     tmux.conf               OSC 52 passthrough, sane defaults
     bashrc.extra            PATH, history persistence, `work` helper
 install-scripts/
@@ -214,6 +218,7 @@ workspace volume is untouched by container restarts.
 | man-db, manpages, bash-completion | Working `man` and tab completion; see TIPS.md |
 | satellite.nvim | PyCharm-style marker bar: diagnostics, git hunks and symbol occurrences on the scrollbar |
 | Node.js 22 | Only for npx-based MCP servers |
+| nvim-mcp 0.7.2, Kokoro (int8) | Narrated walkthroughs, only `--with-narrator`; see below |
 
 ## Choosing between the three editors
 
@@ -470,6 +475,72 @@ the old binaries to run `pg_upgrade` with.
 `./dev stop` gives the container ten seconds, after which Postgres is killed
 rather than shut down. That is safe, as it recovers from its write-ahead log
 on the next start, but `pg stop` first is cleaner.
+
+## Narrated walkthroughs
+
+`:Walkthrough` in Neovim starts Claude Code in a split and asks it for a
+spoken tour of the code. Claude moves a highlight through the code and
+explains each stop aloud, and it moves on only once you have heard the
+explanation. With no argument the tour covers the current file. You can also
+give it a topic (`:Walkthrough how setup picks ports`), or a visual selection
+(`:'<,'>Walkthrough`) for just those lines.
+
+Set it up per project:
+
+```sh
+./dev setup myproject --with-narrator     # a new project
+./dev reconfigure --with-narrator         # an existing one
+./dev up
+./dev narrator-url                        # where to listen
+```
+
+Open the address that `narrator-url` prints in whichever browser should do
+the listening, and press **Start listening**. That browser can be on this
+Mac, on a Linux box, or on a phone over Tailscale. The page shows each
+sentence as it is spoken. Use **Pause** to stop and read the code, **Skip**
+to move to the next stop, and **Stop** to halt the walkthrough; Claude then
+asks how you want to go on.
+
+### How the sound gets out
+
+The container has no sound device, and there is no single way to give it one.
+Docker Desktop for Mac cannot pass a host audio socket through its VM. A Linux
+host could share its PulseAudio socket, but that does nothing for a phone. So
+speech is synthesised in the container and played in a browser tab, reached
+over a published port the same way Orca is. Nothing needs installing on the
+listening side.
+
+Two MCP servers do the work, and `bashrc.extra` registers both with Claude
+Code on the first shell:
+
+- **nvim-mcp** (`nvim`) lets Claude drive the Neovim you are in. A small
+  plugin opens a socket in `/tmp` named after the project root, and
+  `nvim-mcp --connect auto` finds it from the same root. Claude calls
+  `require('walkthrough').show(file, first, last, label)` through its
+  `exec_lua` tool. That highlights the lines in a code window, never in the
+  terminal Claude itself is running in, and centres them.
+- **The narrator** (`narrator`) is a small Python server in
+  `config/narrator/`. Its `speak` tool synthesises the text with Kokoro and
+  sends it to every connected player page, then returns once a player
+  reports that playback has finished. That blocking is what keeps the
+  highlight and the voice in step. It runs as one long-lived process, started
+  by `./dev up`. Inside the container, `narrator start | stop | status | log`
+  controls it.
+
+The player port is per project, chosen like Orca's: the first free port from
+16868 up, or `--narrator-port <port>`. Container port 6769 carries both the
+player and the MCP endpoint (`/mcp`), and the two are guarded differently:
+
+- **The player** needs the token in the link. Anyone with the link hears
+  what is narrated.
+- **The MCP endpoint** answers only connections from inside the container.
+
+The token survives narrator restarts but not a recreated container. After
+`./dev rebuild`, or an `up` that recreates the container, an open player says
+its link was rejected; get a fresh one from `./dev narrator-url`.
+
+Without the narrator, or with no player open, the same walkthrough still
+works. Claude writes each stop's narration in the chat instead.
 
 ## Orca server (beta)
 
@@ -752,3 +823,20 @@ elevates for apt on its own.
   being single-user.
 - **First build takes a while** because it compiles treesitter parsers and
   downloads two toolchains. Subsequent builds hit the layer cache.
+- **nvim-mcp's binary and its Neovim plugin must be the same version.** The
+  plugin names the socket and the server globs for it, and upstream has
+  changed that name since v0.7.2: `main` hashes the project root and prefers
+  `$XDG_RUNTIME_DIR`, where a v0.7.2 server never looks. So `NVIM_MCP_VERSION`
+  in the Dockerfile and the plugin's `tag` in `init.lua` move together.
+  Upstream publishes no release binaries, so `--with-narrator` builds it with
+  cargo, which adds about a minute and a half to that step.
+- **Narration starts a beat late, and only after a click.** Kokoro needs
+  about 0.67 s of CPU per second of speech on a Docker Desktop VM on Apple
+  silicon (int8 model, measured). The narrator hides most of that by
+  synthesising the next sentence while the current one plays, but the first
+  sentence of each stop still waits a second or two. Browsers play no audio
+  until the page has been clicked, which is why the player has a **Start
+  listening** button.
+- **The narrator pins `mcp` 2.x,** in which FastMCP became `MCPServer`. Code
+  copied from v1 examples will not import (`mcp.server.fastmcp` raises on
+  purpose).

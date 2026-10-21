@@ -18,9 +18,16 @@ MARK_BEGIN='# >>> extra mounts'
 MARK_END='# <<< extra mounts'
 ORCA_BEGIN='# >>> orca only'
 ORCA_END='# <<< orca only'
-# Where `setup` starts looking for a free host port for Orca, and how far.
+NARRATOR_BEGIN='# >>> narrator only'
+NARRATOR_END='# <<< narrator only'
+PORTS_KEY_BEGIN='# >>> ports key'
+PORTS_KEY_END='# <<< ports key'
+# Where `setup` starts looking for a free host port for Orca and the narrator,
+# and how far. The ranges do not overlap, so the two never pick the same port
+# in one run.
 ORCA_PORT_BASE=16768
-ORCA_PORT_SPAN=100
+NARRATOR_PORT_BASE=16868
+PORT_SPAN=100
 
 COMPOSE=(docker compose)
 SERVICE=dev
@@ -34,7 +41,9 @@ Usage: ./dev <command>
 First, once per copy of this template:
 
   setup <name> [--with-orca [--orca-port <port>] | --without-orca]
-               [--with-postgres | --without-postgres] [--force]
+               [--with-postgres | --without-postgres]
+               [--with-narrator [--narrator-port <port>] | --without-narrator]
+               [--force]
             Render docker-compose.yml from the template for a project called
             <name>. The name prefixes every named volume, so each project gets
             its own workspace, caches, git identity and Claude Code login.
@@ -44,13 +53,15 @@ First, once per copy of this template:
             docker-compose.yml, so every up and rebuild keeps them.
             --with-postgres installs PostgreSQL in the image; up starts it,
             with its data in a volume that rebuilds keep.
+            --with-narrator installs the narrated-walkthrough tools (below)
+            and publishes the narrator's player on a host port of its own,
+            the first free one from 16868 up, or <port>; up starts it.
             --force re-renders over an existing file, carrying your `mount`
-            entries, the Orca and PostgreSQL choices and the Orca port across
-            (use it after pulling template changes). The port moves only if
-            another project's container now publishes it too. Add the
+            entries, the Orca, PostgreSQL and narrator choices and their ports
+            across (use it after pulling template changes). A port moves only
+            if another project's container now publishes it too. Add the
             --with-/--without- flags to change a choice.
-  reconfigure [--with-orca [--orca-port <port>] | --without-orca]
-              [--with-postgres | --without-postgres]
+  reconfigure [the same options as setup, except <name> and --force]
             setup <name> --force, with <name> read from the existing
             docker-compose.yml. The same carry-over applies.
 
@@ -87,6 +98,19 @@ your Mac or phone runs the UI). Only in a project set up --with-orca:
             server on it, if it is running. Lasts until the container is
             recreated; it says which ORCA_VERSION to pin to keep it.
 
+Narrated walkthroughs (:Walkthrough in Neovim; Claude Code explains the code
+aloud while moving a highlight through it). Only in a project set up
+--with-narrator:
+
+  narrator-url
+            Print the player page's address, with its token. Open it in the
+            browser that should do the listening -- here, on another machine,
+            or on a phone over Tailscale -- and press Start listening.
+  narrator  Start the narrator if it is not running (up does this), then
+            print the address as narrator-url does
+  narrator-log
+            Follow its log
+
 Sharing directories with the host:
 
   <repo>/mount is always bind-mounted at /mount inside the container.
@@ -121,6 +145,11 @@ orca_setting() {
 # The same for PostgreSQL, from the WITH_POSTGRES build arg.
 postgres_setting() {
   awk -F'"' '/^[[:space:]]*WITH_POSTGRES:/ { print $2; exit }' "$COMPOSE_FILE"
+}
+
+# And for the narrator, from WITH_NARRATOR.
+narrator_setting() {
+  awk -F'"' '/^[[:space:]]*WITH_NARRATOR:/ { print $2; exit }' "$COMPOSE_FILE"
 }
 
 # Show the build parameters and ask before building. The parameters are already
@@ -159,17 +188,10 @@ confirm_build() {
   printf 'Build parameters, from %s:\n' "${COMPOSE_FILE#"$ROOT"/}"
   case "$(orca_setting)" in
     true)
-      local port clash
+      local port
       port="$(orca_host_port)"
       printf '  Orca server   included, on host port %s\n' "${port:-(none)}"
-      # setup checked this, but another project may have been set up since.
-      if [ -n "$port" ] && PORTS_IN_USE="$(published_ports)"; then
-        clash="$(port_clash "$port" "$(project_name)")"
-        if [ -n "$clash" ]; then
-          printf '  warning:      port %s: %s, so the container may fail to start.\n' "$port" "$clash"
-          printf '                ./dev reconfigure moves it to a free one.\n'
-        fi
-      fi
+      warn_port_clash "$port"
       ;;
     false) printf '  Orca server   not included\n' ;;
     *) printf '  Orca server   not included: this file predates the setting\n' ;;
@@ -179,8 +201,19 @@ confirm_build() {
     false) printf '  PostgreSQL    not included\n' ;;
     *) printf '  PostgreSQL    not included: this file predates the setting\n' ;;
   esac
+  case "$(narrator_setting)" in
+    true)
+      local nport
+      nport="$(narrator_host_port)"
+      printf '  Narrator      included, started by up, player on host port %s\n' "${nport:-(none)}"
+      warn_port_clash "$nport"
+      ;;
+    false) printf '  Narrator      not included\n' ;;
+    *) printf '  Narrator      not included: this file predates the setting\n' ;;
+  esac
   printf '  To change:    ./dev reconfigure --with-orca | --without-orca\n'
   printf '                                  --with-postgres | --without-postgres\n'
+  printf '                                  --with-narrator | --without-narrator\n'
   printf 'Host SSH agent, found on every run:\n'
   printf '  %s (%s)\n' "$HOST_SSH_AUTH_SOCK" "$SSH_AGENT_NOTE"
   [ -t 0 ] || return 0
@@ -231,14 +264,20 @@ host_address() {
   return 1
 }
 
-# The host side of the published mapping for the container's 6768, read from
-# the rendered compose file so the two cannot drift apart. Not 6768 itself:
-# Orca's desktop app listens there. See docker-compose.yml.template. Empty when
-# the file publishes no Orca port.
-orca_host_port() {
-  awk -F'"' '/^[[:space:]]*-[[:space:]]*"[0-9.:]+:6768"[[:space:]]*$/ {
+# The host side of the published mapping for container port $1, read from the
+# rendered compose file so the two cannot drift apart. Empty when the file
+# publishes nothing for it.
+host_port_for() {
+  awk -F'"' -v cport="$1" '$0 ~ "^[[:space:]]*-[[:space:]]*\"[0-9.:]+:" cport "\"[[:space:]]*$" {
        n = split($2, a, ":"); print a[n - 1]; exit }' "$COMPOSE_FILE" 2>/dev/null
 }
+
+# Orca's: the container's 6768. Not 6768 on the host: Orca's desktop app
+# listens there. See docker-compose.yml.template.
+orca_host_port() { host_port_for 6768; }
+
+# The narrator player's: the container's 6769.
+narrator_host_port() { host_port_for 6769; }
 
 # Every host port published by a container on this machine, running or
 # stopped, as "<port> <compose project>" lines; "-" for a container outside
@@ -275,43 +314,62 @@ port_clash() {
   fi
 }
 
-# Choose project $1's Orca host port: $2 if asked for, else $3 (what the old
-# file had) unless that now clashes, else the first free one from
-# ORCA_PORT_BASE. Sets ORCA_PORT, and ORCA_PORT_NOTE to say how it was chosen.
-choose_orca_port() {
+# Choose one of project $1's host ports: $2 if asked for, else $3 (what the
+# old file had) unless that now clashes, else the first free one from $4. $5
+# is a port this run has already given to something else, never chosen again;
+# $6 names the option that sets it, for the error; $7 is what to tell the user
+# when a carried-over port has to move. Sets CHOSEN_PORT, and CHOSEN_PORT_NOTE
+# to say how it was chosen. Used for Orca and the narrator alike.
+choose_port() {
   # Plain strings, not an array: macOS's bash 3.2 treats an empty array as
   # unset under `set -u`.
-  local own="$1" asked="$2" had="$3" clash="" p how="" caveat=""
+  local own="$1" asked="$2" had="$3" base="$4" taken="$5" flag="$6" after_move="$7"
+  local clash="" p how="" caveat=""
   if ! PORTS_IN_USE="$(published_ports)"; then
     PORTS_IN_USE=""
     caveat="Docker did not answer, so other projects' ports went unchecked"
   fi
-  ORCA_PORT=""
+  CHOSEN_PORT=""
   if [ -n "$asked" ]; then
-    ORCA_PORT="$asked"
+    [ "$asked" != "$taken" ] || die "$flag $asked: that port is already this project's other published port"
+    CHOSEN_PORT="$asked"
     clash="$(port_clash "$asked" "$own")"
     [ -z "$clash" ] || how="warning: $clash"
   elif [ -n "$had" ]; then
     clash="$(port_clash "$had" "$own")"
+    [ "$had" != "$taken" ] || clash="this project's other published port now uses it"
     if [ -z "$clash" ]; then
-      ORCA_PORT="$had"
+      CHOSEN_PORT="$had"
       how="carried over"
     else
-      how="moved from $had, where $clash; pair clients again"
+      how="moved from $had, where $clash${after_move:+; $after_move}"
     fi
   fi
-  if [ -z "$ORCA_PORT" ]; then
-    for p in $(seq "$ORCA_PORT_BASE" $((ORCA_PORT_BASE + ORCA_PORT_SPAN - 1))); do
-      if [ -z "$(port_clash "$p" "$own")" ]; then
-        ORCA_PORT="$p"
+  if [ -z "$CHOSEN_PORT" ]; then
+    for p in $(seq "$base" $((base + PORT_SPAN - 1))); do
+      if [ "$p" != "$taken" ] && [ -z "$(port_clash "$p" "$own")" ]; then
+        CHOSEN_PORT="$p"
         break
       fi
     done
-    [ -n "$ORCA_PORT" ] \
-      || die "no free port in $ORCA_PORT_BASE-$((ORCA_PORT_BASE + ORCA_PORT_SPAN - 1)); pick one with --orca-port <port>"
+    [ -n "$CHOSEN_PORT" ] \
+      || die "no free port in $base-$((base + PORT_SPAN - 1)); pick one with $flag <port>"
   fi
-  ORCA_PORT_NOTE="$how${how:+${caveat:+; }}$caveat"
-  [ -z "$ORCA_PORT_NOTE" ] || ORCA_PORT_NOTE=" ($ORCA_PORT_NOTE)"
+  CHOSEN_PORT_NOTE="$how${how:+${caveat:+; }}$caveat"
+  [ -z "$CHOSEN_PORT_NOTE" ] || CHOSEN_PORT_NOTE=" ($CHOSEN_PORT_NOTE)"
+}
+
+# confirm_build's line for one published port: warn if it now clashes. setup
+# checked, but another project may have been set up since.
+warn_port_clash() {
+  local port="$1" clash
+  [ -n "$port" ] || return 0
+  PORTS_IN_USE="$(published_ports)" || return 0
+  clash="$(port_clash "$port" "$(project_name)")"
+  if [ -n "$clash" ]; then
+    printf '  warning:      port %s: %s, so the container may fail to start.\n' "$port" "$clash"
+    printf '                ./dev reconfigure moves it to a free one.\n'
+  fi
 }
 
 extra_mounts() {
@@ -337,7 +395,9 @@ insert_mounts() {
 cmd_setup() {
   local name="" force="" orca="" orca_note="" carried="" host tmp
   local asked_port="" had_port="" postgres="" postgres_note=""
-  local usage="usage: ./dev setup <project-name> [--with-orca [--orca-port <port>] | --without-orca] [--with-postgres | --without-postgres] [--force]"
+  local narrator="" narrator_note="" asked_nport="" had_nport=""
+  local orca_port="" orca_port_note="" narrator_port="" narrator_port_note=""
+  local usage="usage: ./dev setup <project-name> [--with-orca [--orca-port <port>] | --without-orca] [--with-postgres | --without-postgres] [--with-narrator [--narrator-port <port>] | --without-narrator] [--force]"
   while [ $# -gt 0 ]; do
     case "$1" in
       --force) force=1 ;;
@@ -345,9 +405,16 @@ cmd_setup() {
       --without-orca) orca=false ;;
       --with-postgres) postgres=true ;;
       --without-postgres) postgres=false ;;
+      --with-narrator) narrator=true ;;
+      --without-narrator) narrator=false ;;
       --orca-port)
         [ $# -ge 2 ] || die "$usage"
         asked_port="$2"
+        shift
+        ;;
+      --narrator-port)
+        [ $# -ge 2 ] || die "$usage"
+        asked_nport="$2"
         shift
         ;;
       -*) die "unknown option: $1" ;;
@@ -361,6 +428,10 @@ cmd_setup() {
     [[ "$asked_port" =~ ^[0-9]+$ ]] && [ "$asked_port" -ge 1024 ] && [ "$asked_port" -le 65535 ] \
       || die "--orca-port takes a port number from 1024 to 65535 (got: $asked_port)"
   fi
+  if [ -n "$asked_nport" ]; then
+    [[ "$asked_nport" =~ ^[0-9]+$ ]] && [ "$asked_nport" -ge 1024 ] && [ "$asked_nport" -le 65535 ] \
+      || die "--narrator-port takes a port number from 1024 to 65535 (got: $asked_nport)"
+  fi
   [ -f "$TEMPLATE" ] || die "missing template: $TEMPLATE"
 
   # Compose's own rule for project names, enforced here so the failure arrives
@@ -373,6 +444,7 @@ cmd_setup() {
       || die "$COMPOSE_FILE already exists. Pass --force to re-render it (your mount entries and Orca choice are carried over)."
     carried="$(extra_mounts)"
     had_port="$(orca_host_port)"
+    had_nport="$(narrator_host_port)"
     # Remembered like the mounts, unless this run says otherwise. A file from
     # before the setting has nothing to carry, so say so rather than quietly
     # settling on "not included".
@@ -390,13 +462,32 @@ cmd_setup() {
       postgres="$(postgres_setting)"
       [ -z "$postgres" ] || postgres_note=" (carried over)"
     fi
+    # Nor for the narrator.
+    if [ -z "$narrator" ]; then
+      narrator="$(narrator_setting)"
+      [ -z "$narrator" ] || narrator_note=" (carried over)"
+    fi
   fi
   orca="${orca:-false}"
   postgres="${postgres:-false}"
+  narrator="${narrator:-false}"
   if [ "$orca" = true ]; then
-    choose_orca_port "$name" "$asked_port" "$had_port"
+    choose_port "$name" "$asked_port" "$had_port" "$ORCA_PORT_BASE" "" \
+      --orca-port "pair clients again"
+    orca_port="$CHOSEN_PORT"
+    orca_port_note="$CHOSEN_PORT_NOTE"
   elif [ -n "$asked_port" ]; then
     die "--orca-port is for a project with Orca; add --with-orca"
+  fi
+  # After Orca's, and told which port Orca took, so the two cannot coincide
+  # even when --orca-port lands in the narrator's range.
+  if [ "$narrator" = true ]; then
+    choose_port "$name" "$asked_nport" "$had_nport" "$NARRATOR_PORT_BASE" "$orca_port" \
+      --narrator-port "reopen the player from ./dev narrator-url"
+    narrator_port="$CHOSEN_PORT"
+    narrator_port_note="$CHOSEN_PORT_NOTE"
+  elif [ -n "$asked_nport" ]; then
+    die "--narrator-port is for a project with the narrator; add --with-narrator"
   fi
 
   # Underscores are legal in a compose project name but not in a hostname.
@@ -405,15 +496,25 @@ cmd_setup() {
   # Without Orca, drop the template's Orca-only block (its published port) as
   # well as setting the build arg. The port has to be free on the host whether
   # or not anything listens behind it, so leaving it in would let Orca's port
-  # stop a container that has no Orca from starting.
+  # stop a container that has no Orca from starting. The same for the
+  # narrator's block, and the `ports:` key goes when neither is left under it.
   local render=(-e "s/__PROJECT_NAME__/$name/g"
                 -e "s/__PROJECT_HOSTNAME__/$host/g"
                 -e "s/__WITH_ORCA__/$orca/g"
-                -e "s/__WITH_POSTGRES__/$postgres/g")
+                -e "s/__WITH_POSTGRES__/$postgres/g"
+                -e "s/__WITH_NARRATOR__/$narrator/g")
   if [ "$orca" = true ]; then
-    render+=(-e "s/__ORCA_PORT__/$ORCA_PORT/g")
+    render+=(-e "s/__ORCA_PORT__/$orca_port/g")
   else
     render+=(-e "/$ORCA_BEGIN/,/$ORCA_END/d")
+  fi
+  if [ "$narrator" = true ]; then
+    render+=(-e "s/__NARRATOR_PORT__/$narrator_port/g")
+  else
+    render+=(-e "/$NARRATOR_BEGIN/,/$NARRATOR_END/d")
+  fi
+  if [ "$orca" != true ] && [ "$narrator" != true ]; then
+    render+=(-e "/$PORTS_KEY_BEGIN/,/$PORTS_KEY_END/d")
   fi
 
   tmp="$COMPOSE_FILE.tmp"
@@ -429,7 +530,7 @@ cmd_setup() {
   printf '  exchange dir : %s -> /mount\n' "${MOUNT_DIR#"$ROOT"/}"
   if [ "$orca" = true ]; then
     printf '  Orca server  : included%s\n' "$orca_note"
-    printf '  Orca port    : %s%s\n' "$ORCA_PORT" "$ORCA_PORT_NOTE"
+    printf '  Orca port    : %s%s\n' "$orca_port" "$orca_port_note"
   else
     printf '  Orca server  : not included%s\n' "$orca_note"
   fi
@@ -437,6 +538,12 @@ cmd_setup() {
     printf '  PostgreSQL   : included%s; up starts it\n' "$postgres_note"
   else
     printf '  PostgreSQL   : not included%s\n' "$postgres_note"
+  fi
+  if [ "$narrator" = true ]; then
+    printf '  Narrator     : included%s; up starts it\n' "$narrator_note"
+    printf '  Player port  : %s%s\n' "$narrator_port" "$narrator_port_note"
+  else
+    printf '  Narrator     : not included%s\n' "$narrator_note"
   fi
   if [ -n "$carried" ]; then
     printf '  carried over %d extra mount(s)\n' "$(printf '%s\n' "$carried" | grep -c .)"
@@ -455,8 +562,8 @@ cmd_reconfigure() {
   for arg in "$@"; do
     case "$arg" in
       -*) ;;
-      # The value after --orca-port is the one bare word allowed.
-      *) [ "$prev" = --orca-port ] \
+      # The value after a --*-port option is the one bare word allowed.
+      *) [ "$prev" = --orca-port ] || [ "$prev" = --narrator-port ] \
            || die "reconfigure keeps the project's name; to rename, run: ./dev setup <new-name> --force" ;;
     esac
     prev="$arg"
@@ -578,12 +685,40 @@ cmd_orca() {
   [ -z "$start_opts" ] || echo "Pairing URL, if a client needs one: ./dev orca-url"
 }
 
-# `up` and `rebuild` start PostgreSQL and Orca in a project that includes
-# them, since a recreated container comes back with neither running, and each
-# is the reason the project has it. Best effort: by now the container is up
-# whatever happens to them, so a failure is a warning, not a failed `up`. Orca
-# runs in a subshell because cmd_orca dies on errors. Only for "true": a file
-# that predates a setting has neither in its image.
+require_narrator() {
+  [ "$(narrator_setting)" = true ] \
+    || die "$(project_name) is set up without the narrator. Add it: ./dev reconfigure --with-narrator && ./dev up"
+}
+
+# `./dev narrator-url`: where a browser finds the player. The token comes from
+# the container (`narrator url-path`); the address is this machine's, as for
+# Orca, because the port is published here and Docker forwards it inward.
+# localhost is offered too, since a browser on this machine reaches a
+# published port that way, which Orca's pairing (with its address check)
+# cannot do.
+cmd_narrator_url() {
+  local path port found
+  require_narrator
+  port="$(narrator_host_port)"
+  [ -n "$port" ] \
+    || die "docker-compose.yml publishes no narrator port. Re-render it: ./dev reconfigure --with-narrator && ./dev up"
+  cd "$DCDIR"
+  path="$("${COMPOSE[@]}" exec -T "$SERVICE" bash -lc 'narrator url-path')" || return 1
+  echo "Narrator player -- open one in the browser that should listen, then press Start listening:"
+  if found="$(host_address)"; then
+    printf '  http://%s:%s%s   (%s)\n' "${found%% *}" "$port" "$path" "${found#* }"
+  fi
+  printf '  http://localhost:%s%s   (this machine only)\n' "$port" "$path"
+  echo "The token in it is a secret: anyone with the link hears what is narrated."
+}
+
+# `up` and `rebuild` start PostgreSQL, the narrator and Orca in a project that
+# includes them, since a recreated container comes back with none running, and
+# each is the reason the project has it. Best effort: by now the container is
+# up whatever happens to them, so a failure is a warning, not a failed `up`.
+# Orca runs in a subshell because cmd_orca dies on errors. Only for "true": a
+# file that predates a setting has none of them in its image. `narrator start`
+# is safe to repeat in the same way as `pg start` below.
 #
 # PostgreSQL first, as it takes a second and an application started from the
 # shell expects it. `pg start` is safe to repeat: on a container that was
@@ -594,6 +729,15 @@ start_services_after_up() {
   if [ "$(postgres_setting)" = true ]; then
     "${COMPOSE[@]}" exec -T "$SERVICE" bash -lc 'pg start' \
       || echo "warning: PostgreSQL did not start; run pg start inside, or see pg log" >&2
+  fi
+  # The narrator before Orca too: it is quick, and Orca's start is the one
+  # that prints the most.
+  if [ "$(narrator_setting)" = true ]; then
+    if "${COMPOSE[@]}" exec -T "$SERVICE" bash -lc 'narrator start'; then
+      echo "Narrator player address: ./dev narrator-url"
+    else
+      echo "warning: the narrator did not start; try ./dev narrator, or see ./dev narrator-log" >&2
+    fi
   fi
   if [ "$(orca_setting)" = true ]; then
     echo "Starting the Orca server..."
@@ -682,6 +826,21 @@ case "${1:-}" in
     require_setup
     cd "$DCDIR"
     exec "${COMPOSE[@]}" exec "$SERVICE" bash -lc 'orca-server log'
+    ;;
+  narrator)
+    require_setup
+    require_narrator
+    (cd "$DCDIR" && "${COMPOSE[@]}" exec -T "$SERVICE" bash -lc 'narrator start')
+    cmd_narrator_url
+    ;;
+  narrator-url)
+    require_setup
+    cmd_narrator_url
+    ;;
+  narrator-log)
+    require_setup
+    cd "$DCDIR"
+    exec "${COMPOSE[@]}" exec "$SERVICE" bash -lc 'narrator log'
     ;;
   stop)
     require_setup

@@ -151,6 +151,10 @@ vim.api.nvim_create_autocmd("FileChangedShellPost", {
 -- ---------------------------------------------------------------------------
 require("devtips").setup()
 
+-- `:Walkthrough`: a narrated tour of the code by Claude Code; see
+-- lua/walkthrough.lua.
+require("walkthrough").setup()
+
 -- ---------------------------------------------------------------------------
 -- lazy.nvim bootstrap
 -- ---------------------------------------------------------------------------
@@ -589,6 +593,34 @@ require("lazy").setup({
     end },
 
   { "windwp/nvim-autopairs", event = "InsertEnter", opts = {} },
+
+  -- The Neovim half of nvim-mcp, the MCP server that lets Claude Code drive
+  -- this editor (for `:Walkthrough`, see lua/walkthrough.lua). All it does is
+  -- open an RPC socket the server can find: /tmp/nvim-mcp.<project root with
+  -- / as %>.<pid>.sock, which `nvim-mcp --connect auto` globs for from the
+  -- same project root.
+  --
+  -- Pinned to the tag of the binary the Dockerfile builds (NVIM_MCP_VERSION),
+  -- because the two halves must agree on that name and upstream has since
+  -- changed it: main hashes the root and prefers $XDG_RUNTIME_DIR, which a
+  -- v0.7.2 server never looks in. Bump both together. No `build`: the binary
+  -- comes from the image, not from cargo at plugin-install time.
+  --
+  -- Loaded in every image, with or without the narrator: the socket costs
+  -- nothing, and the config stays the same everywhere.
+  { "linw1995/nvim-mcp", tag = "v0.7.2", lazy = false, config = function()
+      -- Upstream's advice: a git commit or rebase editor would otherwise add a
+      -- second socket for the same project, and auto-connect would attach to
+      -- a window that is about to close.
+      for _, arg in ipairs(vim.fn.argv()) do
+        local name = vim.fn.fnamemodify(arg, ":t")
+        if name == "COMMIT_EDITMSG" or name == "MERGE_MSG"
+            or name == "git-rebase-todo" or name == "TAG_EDITMSG" then
+          return
+        end
+      end
+      require("nvim-mcp").setup({})
+    end },
 }, {
   install = { colorscheme = { "tokyonight-night", "habamax" } },
   checker = { enabled = false },

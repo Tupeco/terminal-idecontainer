@@ -1,0 +1,206 @@
+<!doctype html>
+<!--
+  The narrator's speaker. narrator.py serves this at /?token=...; `./dev
+  narrator-url` on the host prints the address. Clips are announced over
+  /events, fetched as WAV, played in order through Web Audio, and each one is
+  reported back to /ended when it finishes -- that report is what lets Claude's
+  `speak` call return and the walkthrough move on.
+
+  Nothing connects until "Start listening" is pressed. Browsers refuse to play
+  audio a page starts by itself, and a player that counted as listening while
+  it could not make a sound would leave `speak` waiting on silence.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Narrator</title>
+<style>
+  :root {
+    --bg: #f6f6f3; --fg: #1d1d1b; --muted: #6b6b66; --line: #dcdcd6;
+    --accent: #3a63c8; --now: #e8eefc;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16171b; --fg: #e6e6e3; --muted: #9a9a96; --line: #2c2e35;
+      --accent: #7aa2f7; --now: #1f2740;
+      color-scheme: dark;
+    }
+  }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main { max-width: 44rem; margin: 0 auto; padding: 1.5rem 1rem 3rem; }
+  header { display: flex; align-items: baseline; gap: .75rem; flex-wrap: wrap; }
+  h1 { font-size: 1.25rem; margin: 0; }
+  #state { color: var(--muted); font-size: .9rem; }
+  #state.bad { color: #c0392b; }
+  .controls { display: flex; gap: .5rem; flex-wrap: wrap; margin: 1rem 0; }
+  button {
+    font: inherit; padding: .5rem 1rem; border-radius: .5rem;
+    border: 1px solid var(--line); background: transparent; color: var(--fg);
+    cursor: pointer;
+  }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button:disabled { opacity: .4; cursor: default; }
+  #now {
+    min-height: 4.5rem; padding: 1rem; border-radius: .5rem;
+    background: var(--now); font-size: 1.15rem;
+  }
+  #now:empty::before { content: "Waiting for something to say."; color: var(--muted); }
+  ol { list-style: none; padding: 0; margin: 1.25rem 0 0; }
+  li { padding: .5rem 0; border-top: 1px solid var(--line); color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Narrator</h1>
+    <span id="state">not listening</span>
+  </header>
+  <div class="controls">
+    <button id="start" class="primary">Start listening</button>
+    <button id="pause" disabled>Pause</button>
+    <button id="skip" disabled>Skip</button>
+    <button id="stop" disabled>Stop</button>
+  </div>
+  <div id="now"></div>
+  <ol id="history"></ol>
+</main>
+<script>
+"use strict";
+const token = new URLSearchParams(location.search).get("token") || "";
+const q = (p) => `${p}?token=${encodeURIComponent(token)}`;
+const $ = (id) => document.getElementById(id);
+
+let ctx = null;          // AudioContext, created inside the click that allows it
+let queue = [];          // {id, text, ready: Promise<AudioBuffer>}, in arrival order
+let current = null;      // {item, source}
+let paused = false;
+
+function setState(text, bad) {
+  $("state").textContent = text;
+  $("state").className = bad ? "bad" : "";
+}
+
+function post(path, body) {
+  return fetch(q(path), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body || {}),
+  }).catch(() => {});
+}
+
+function remember(text) {
+  const li = document.createElement("li");
+  li.textContent = text;
+  $("history").prepend(li);
+  while ($("history").children.length > 50) $("history").lastChild.remove();
+}
+
+// Fetch and decode as soon as a clip is announced, but play strictly in order:
+// the promise sits in the queue, so a later clip that decodes first still waits.
+function enqueue(id, text) {
+  const ready = fetch(q(`clip/${id}.wav`))
+    .then((r) => { if (!r.ok) throw new Error(r.status); return r.arrayBuffer(); })
+    .then((b) => ctx.decodeAudioData(b));
+  queue.push({ id, text, ready, cancelled: false });
+  pump();
+}
+
+async function pump() {
+  if (current || !queue.length) return;
+  const item = queue.shift();
+  current = { item, source: null };
+  $("now").textContent = item.text;
+  let buffer;
+  try {
+    buffer = await item.ready;
+  } catch (e) {
+    // Report it anyway, or `speak` would wait for a clip that will never play.
+    post("ended", { id: item.id });
+    current = null;
+    return pump();
+  }
+  if (item.cancelled) { current = null; return pump(); }
+  const source = ctx.createBufferSource();
+  source.buffer = buffer;
+  source.connect(ctx.destination);
+  source.onended = () => {
+    if (!item.cancelled) post("ended", { id: item.id });
+    remember(item.text);
+    $("now").textContent = "";
+    current = null;
+    // A short breath between clips, which Kokoro trims from both ends.
+    setTimeout(pump, 200);
+  };
+  current.source = source;
+  source.start();
+}
+
+// Drop everything: the queue and whatever is playing. Shared by our own Stop
+// button and by Claude's `stop` tool.
+function flush() {
+  for (const item of queue) item.cancelled = true;
+  queue = [];
+  if (current) {
+    current.item.cancelled = true;
+    if (current.source) current.source.stop();
+  }
+}
+
+function connect() {
+  const es = new EventSource(q("events"));
+  es.onopen = () => setState("listening");
+  es.onmessage = (m) => {
+    const ev = JSON.parse(m.data);
+    if (ev.type === "hello") setState(`listening · voice ${ev.voice}`);
+    else if (ev.type === "clip") enqueue(ev.id, ev.text);
+    else if (ev.type === "stop") flush();
+  };
+  es.onerror = () => {
+    // EventSource retries on its own after a dropped connection. It gives up
+    // only when the server answered with an error, which here means the token
+    // no longer matches: the container was recreated and made a new one.
+    if (es.readyState === EventSource.CLOSED) {
+      setState("rejected: get a fresh link with ./dev narrator-url", true);
+    } else {
+      setState("reconnecting…", true);
+    }
+  };
+}
+
+$("start").onclick = () => {
+  ctx = new (window.AudioContext || window.webkitAudioContext)();
+  ctx.resume();
+  $("start").disabled = true;
+  for (const b of ["pause", "skip", "stop"]) $(b).disabled = false;
+  connect();
+};
+
+$("pause").onclick = () => {
+  paused = !paused;
+  if (paused) ctx.suspend(); else ctx.resume();
+  $("pause").textContent = paused ? "Resume" : "Pause";
+};
+
+// Skip ends the current clip early but counts it as heard, so the walkthrough
+// carries on with the next one.
+$("skip").onclick = () => { if (current && current.source) current.source.stop(); };
+
+// Stop also tells the server, and Claude's waiting `speak` returns saying the
+// listener stopped, so the walkthrough pauses rather than talking on.
+// Resumes a paused context too: a source stopped while suspended does not
+// fire onended until the context runs again, and the next clip would sit there.
+$("stop").onclick = () => {
+  flush();
+  post("stopped");
+  if (paused) $("pause").onclick();
+};
+
+if (!token) setState("no token in the link: get one with ./dev narrator-url", true);
+</script>
+</body>
+</html>
