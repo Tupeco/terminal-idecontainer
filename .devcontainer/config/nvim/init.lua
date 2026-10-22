@@ -619,7 +619,16 @@ require("lazy").setup({
           return
         end
       end
-      require("nvim-mcp").setup({})
+      -- The socket name carries the whole project path, and a unix socket
+      -- path is capped at 107 bytes, so a deeply nested project fails here
+      -- with "Vim:Failed to start server: invalid argument" and a stack
+      -- trace on every start. Turn that into one line saying why; the editor
+      -- works regardless, only Claude cannot reach it.
+      local ok, err = pcall(require("nvim-mcp").setup, {})
+      if not ok then
+        vim.notify("nvim-mcp: no socket for Claude Code (project path too long for a unix socket?): "
+          .. tostring(err):match("[^\n]*"), vim.log.levels.WARN)
+      end
     end },
 }, {
   install = { colorscheme = { "tokyonight-night", "habamax" } },

@@ -1,15 +1,15 @@
 -- Narrated code walkthroughs: the Neovim half.
 --
--- Claude Code drives this through nvim-mcp's `exec_lua` tool, one stop at a
--- time:
+-- show() and clear() are called over RPC, one stop at a time:
 --
---   return require('walkthrough').show('dev', 120, 148, 'Choosing a port')
---   -- ...then the narrator's `speak` about those lines, which blocks until heard
---   return require('walkthrough').clear()
+--   require('walkthrough').show('/path/to/dev', 120, 148, 'Choosing a port')
+--   require('walkthrough').clear()
 --
--- and `:Walkthrough` starts such a session: a Claude Code terminal in a split,
--- given a prompt that spells out that protocol. The narrator (the MCP server
--- that speaks, and its browser player) is described in README.md under
+-- by the narrator during a tour (narrator.py, over the socket the nvim-mcp
+-- plugin opens), or by Claude Code through nvim-mcp's `exec_lua` when there is
+-- no narrator. `:Walkthrough` starts a session: a Claude Code terminal in a
+-- split, given a prompt that spells out the protocol. The narrator (the MCP
+-- server that speaks, and its browser player) is described in README.md under
 -- "Narrated walkthroughs"; without it the same walkthrough works with the
 -- narration written in Claude's chat instead.
 --
@@ -115,22 +115,28 @@ function M.clear()
   return "cleared"
 end
 
--- What `:Walkthrough` asks of Claude. The steps are explicit because the
--- timing depends on them: highlight first, then a `speak` that blocks, so the
--- right lines are on screen for exactly as long as they are being talked about.
+-- What `:Walkthrough` asks of Claude. With the narrator, a tour: the stops go
+-- to the narrator, which highlights each one here (calling show() over its own
+-- connection) while speaking it. Claude adds stops in small batches as it
+-- writes them, so playback starts early and Claude's thinking overlaps the
+-- listening -- one stop per agent turn meant ~25 s of silence between stops.
+-- Without the narrator, Claude moves the highlight itself through nvim-mcp
+-- and writes the narration in chat.
 local function prompt(topic)
   return table.concat({
     "Give me a narrated walkthrough of " .. topic .. ".",
     "",
-    "You control my Neovim through the `nvim` MCP server (nvim-mcp) and speak aloud through the `narrator` MCP server.",
+    "Use the `narrator` MCP server's tour tools; it speaks in my browser player and highlights each stop in my Neovim as it plays.",
     "",
-    "1. Read the code first. Plan 4 to 12 stops in an order that tells the story of how it works, and post the plan as one short list.",
+    "1. Skim enough to outline 4 to 12 stops that tell the story of how it works, in order. Post the outline as one short list. Do not read everything first: playback should start soon.",
     "2. Call narrator `status`. If no player is connected, ask me to open the address that `./dev narrator-url` prints on the host, and wait until I say it is open.",
-    "3. For each stop, first highlight it: nvim `exec_lua` with `return require('walkthrough').show('<path relative to the working directory>', <first line>, <last line>, '<label of a few words>')`. Then call narrator `speak` with one to four sentences about those lines. `speak` returns once I have heard them; only then go to the next stop.",
-    "4. Write for the ear: no markdown, no symbols spelt out, say \"the setup function\" rather than reading identifiers character by character. Explain why as well as what.",
-    "5. If `speak` says I pressed Stop, stop and ask me how to continue. At the end, run `return require('walkthrough').clear()` and offer to go deeper on any stop.",
+    "3. Call `tour_start` with project_root set to your working directory and a short title.",
+    "4. Write the first one or two stops and send them with `tour_add` at once; it returns immediately and they start playing. Then read on and keep adding stops one to three at a time, staying ahead of me. Each stop is a file path relative to project_root, first and last line (1-based, inclusive), a label of a few words, and one to four sentences of text.",
+    "5. Write the text for the ear: no markdown, no symbols spelt out, say \"the setup function\" rather than reading identifiers character by character. Explain why as well as what.",
+    "6. Mark the final batch with last=true, then call `tour_wait`.",
+    "7. If any reply says I pressed Stop, stop adding and ask me what I would like. Answer in chat or with `speak`; to carry on, `tour_resume` then `tour_wait`. When the tour finishes, offer to go deeper on any stop.",
     "",
-    "If nvim-mcp reports no connection, use its `get_targets` and `connect` tools first. If the narrator tools are unavailable, write each stop's narration in chat instead and still move the highlight.",
+    "If the narrator tools are unavailable, use the `nvim` MCP server (nvim-mcp) instead: for each stop run `return require('walkthrough').show('<path>', <first>, <last>, '<label>')` with `exec_lua` and write the narration in chat; if it reports no connection, use `get_targets` and `connect` first. Finish with `return require('walkthrough').clear()`.",
   }, "\n")
 end
 

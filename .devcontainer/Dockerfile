@@ -395,7 +395,10 @@ RUN curl -fsSL https://claude.ai/install.sh | bash \
 #
 # Two MCP servers for Claude Code, which `:Walkthrough` in Neovim puts to
 # work (config/nvim/lua/walkthrough.lua): nvim-mcp drives the editor you are
-# in, and the narrator speaks. The narrator synthesises speech here, with
+# in, and the narrator speaks -- and, during a tour, moves the highlight itself
+# through pynvim, over the socket nvim-mcp's plugin opens, so the stops play
+# back to back without a turn of the agent between them. The narrator
+# synthesises speech here, with
 # Kokoro, and plays it in a browser tab on a published port, because the
 # container has no sound device and no one way of getting one to the Mac, a
 # Linux host and a phone over Tailscale alike. config/narrator/narrator.py
@@ -430,6 +433,7 @@ ARG WITH_NARRATOR=false
 ARG NVIM_MCP_VERSION=0.7.2
 ARG KOKORO_ONNX_VERSION=0.6.1
 ARG MCP_SDK_VERSION=2.3.0
+ARG PYNVIM_VERSION=0.6.0
 ARG KOKORO_MODEL_RELEASE=model-files-v1.1
 ARG KOKORO_MODEL_FILE=kokoro-v1.0.int8.onnx
 ARG KOKORO_VOICES_FILE=voices-v1.0.bin
@@ -445,7 +449,8 @@ RUN set -eux; \
     nvim-mcp --version; \
     uv venv /opt/narrator/venv --python "${PYTHON_VERSION}"; \
     UV_NO_CACHE=1 uv pip install --python /opt/narrator/venv/bin/python \
-        "kokoro-onnx==${KOKORO_ONNX_VERSION}" "mcp==${MCP_SDK_VERSION}"; \
+        "kokoro-onnx==${KOKORO_ONNX_VERSION}" "mcp==${MCP_SDK_VERSION}" \
+        "pynvim==${PYNVIM_VERSION}"; \
     mkdir -p /opt/narrator/models; \
     base="https://github.com/thewh1teagle/kokoro-onnx/releases/download/${KOKORO_MODEL_RELEASE}"; \
     curl -fsSL -o /opt/narrator/models/kokoro.onnx "${base}/${KOKORO_MODEL_FILE}"; \

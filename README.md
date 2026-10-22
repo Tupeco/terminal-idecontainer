@@ -496,10 +496,15 @@ Set it up per project:
 
 Open the address that `narrator-url` prints in whichever browser should do
 the listening, and press **Start listening**. That browser can be on this
-Mac, on a Linux box, or on a phone over Tailscale. The page shows each
-sentence as it is spoken. Use **Pause** to stop and read the code, **Skip**
-to move to the next stop, and **Stop** to halt the walkthrough; Claude then
-asks how you want to go on.
+Mac, on a Linux box, or on a phone over Tailscale. The page shows which stop
+is playing and each sentence as it is spoken. The controls:
+
+- **Previous** and **Next** move between stops, and the highlight in Neovim
+  moves with them.
+- **Pause** holds the voice while you read the code.
+- **Stop** holds the whole tour, even if Claude is still writing later stops.
+  Claude is told, and asks how you want to go on. **Continue**, which Stop
+  becomes, carries on from the stop you stopped at.
 
 ### How the sound gets out
 
@@ -513,19 +518,33 @@ listening side.
 Two MCP servers do the work, and `bashrc.extra` registers both with Claude
 Code on the first shell:
 
+- **The narrator** (`narrator`) is a small Python server in
+  `config/narrator/`. A walkthrough is a *tour*, a queue of stops. Each stop
+  is a range of a file plus what to say about it. Claude calls `tour_start`,
+  then `tour_add` with a few stops at a time as it writes them. `tour_add`
+  returns at once, so the first stops play while Claude is still reading the
+  code for later ones; on a large codebase the first words don't wait for
+  the whole plan. For each stop, the narrator calls
+  `require('walkthrough').show(file, first, last, label)` in your Neovim,
+  then sends the stop's audio (Kokoro, synthesised a stop ahead) to every
+  connected player. It moves on when a player reports the audio has finished.
+  `show` highlights the lines in a code window, never in the terminal Claude
+  is running in, and centres them. `tour_wait` returns to Claude when the
+  tour ends or you press Stop. There is also a plain `speak` tool, for
+  answering a question while the tour is held. The narrator runs as one
+  long-lived process, started by `./dev up`. Inside the container,
+  `narrator start | stop | status | log` controls it.
 - **nvim-mcp** (`nvim`) lets Claude drive the Neovim you are in. A small
   plugin opens a socket in `/tmp` named after the project root, and
-  `nvim-mcp --connect auto` finds it from the same root. Claude calls
-  `require('walkthrough').show(file, first, last, label)` through its
-  `exec_lua` tool. That highlights the lines in a code window, never in the
-  terminal Claude itself is running in, and centres them.
-- **The narrator** (`narrator`) is a small Python server in
-  `config/narrator/`. Its `speak` tool synthesises the text with Kokoro and
-  sends it to every connected player page, then returns once a player
-  reports that playback has finished. That blocking is what keeps the
-  highlight and the voice in step. It runs as one long-lived process, started
-  by `./dev up`. Inside the container, `narrator start | stop | status | log`
-  controls it.
+  `nvim-mcp --connect auto` finds it from the same root. The narrator uses
+  that same socket for the highlight, through pynvim. Claude needs nvim-mcp
+  itself only for walkthroughs without the narrator, when it moves the
+  highlight with `exec_lua` and writes the narration in chat.
+
+The first version had Claude call `speak` once per stop. Every stop then
+waited a full agent turn, about 25 seconds of silence, measured. Stop pressed
+in that gap was lost, and Previous could not move the highlight back, because
+only Claude could move it.
 
 The player port is per project, chosen like Orca's: the first free port from
 16868 up, or `--narrator-port <port>`. Container port 6769 carries both the

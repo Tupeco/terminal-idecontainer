@@ -118,7 +118,11 @@ Several files are parsed by other files, so their format is a contract:
   for `:Walkthrough` (`config/nvim/lua/walkthrough.lua`). Its step sits just
   before PostgreSQL's. It builds nvim-mcp with cargo and installs
   `config/narrator/` (a Kokoro TTS MCP server, `narrator.py`, plus its browser
-  player) into `/opt/narrator`. Audio leaves the container only through that
+  player) into `/opt/narrator`. A walkthrough is a server-side tour
+  (`tour_start`/`tour_add`/`tour_wait`): the narrator plays queued stops back
+  to back and moves the highlight itself by calling `walkthrough.show()`
+  through pynvim on the nvim-mcp plugin's socket, so `show()`'s signature is a
+  contract between `narrator.py` and `walkthrough.lua`. Audio leaves the container only through that
   browser page, on container port 6769, which is published per project from
   16868 up, chosen by `choose_port` the same way as Orca's. The MCP endpoint
   `/mcp` on that port refuses non-loopback clients, and the player needs the

@@ -3,12 +3,17 @@
   The narrator's speaker. narrator.py serves this at /?token=...; `./dev
   narrator-url` on the host prints the address. Clips are announced over
   /events, fetched as WAV, played in order through Web Audio, and each one is
-  reported back to /ended when it finishes -- that report is what lets Claude's
-  `speak` call return and the walkthrough move on.
+  reported back to /ended when it finishes. That report is what moves a tour
+  on to its next stop, and what lets a plain `speak` call return.
+
+  The buttons go to /control; the server owns the tour (which stop is playing,
+  stopped or not) and tells this page through "state" events, so two players
+  open at once show the same thing. Pause is the exception: it only suspends
+  this page's audio, and the server simply waits for the clip to end.
 
   Nothing connects until "Start listening" is pressed. Browsers refuse to play
   audio a page starts by itself, and a player that counted as listening while
-  it could not make a sound would leave `speak` waiting on silence.
+  it could not make a sound would leave the tour waiting on silence.
 -->
 <html lang="en">
 <head>
@@ -37,6 +42,8 @@
   h1 { font-size: 1.25rem; margin: 0; }
   #state { color: var(--muted); font-size: .9rem; }
   #state.bad { color: #c0392b; }
+  #tour { margin: .75rem 0 0; color: var(--muted); min-height: 1.5em; }
+  #tour b { color: var(--fg); font-weight: 600; }
   .controls { display: flex; gap: .5rem; flex-wrap: wrap; margin: 1rem 0; }
   button {
     font: inherit; padding: .5rem 1rem; border-radius: .5rem;
@@ -60,11 +67,13 @@
     <h1>Narrator</h1>
     <span id="state">not listening</span>
   </header>
+  <div id="tour"></div>
   <div class="controls">
     <button id="start" class="primary">Start listening</button>
+    <button id="prev" disabled title="Back to the previous stop">⏮ Previous</button>
     <button id="pause" disabled>Pause</button>
-    <button id="skip" disabled>Skip</button>
-    <button id="stop" disabled>Stop</button>
+    <button id="next" disabled title="On to the next stop">Next ⏭</button>
+    <button id="stop" disabled title="Hold the tour and hand back to Claude">Stop</button>
   </div>
   <div id="now"></div>
   <ol id="history"></ol>
@@ -79,6 +88,7 @@ let ctx = null;          // AudioContext, created inside the click that allows i
 let queue = [];          // {id, text, ready: Promise<AudioBuffer>}, in arrival order
 let current = null;      // {item, source}
 let paused = false;
+let tour = null;         // the server's view: {title, state, index, total, complete, label}
 
 function setState(text, bad) {
   $("state").textContent = text;
@@ -100,6 +110,28 @@ function remember(text) {
   while ($("history").children.length > 50) $("history").lastChild.remove();
 }
 
+function showTour(t) {
+  tour = t;
+  const el = $("tour");
+  el.textContent = "";
+  if (!t) {
+    $("stop").textContent = "Stop";
+    return;
+  }
+  const n = Math.min(t.index + 1, t.total);
+  const total = t.complete ? `${t.total}` : `${t.total}+`;
+  const head = document.createElement("b");
+  head.textContent = t.title;
+  el.append(head);
+  const what = {
+    playing: t.index >= t.total ? " · waiting for Claude to write the next stop" : ` · stop ${n} of ${total}: ${t.label}`,
+    stopped: ` · stopped at stop ${n} of ${total}: ${t.label}`,
+    finished: ` · finished (${t.total} stops)`,
+  }[t.state] || "";
+  el.append(document.createTextNode(what));
+  $("stop").textContent = t.state === "stopped" ? "Continue" : "Stop";
+}
+
 // Fetch and decode as soon as a clip is announced, but play strictly in order:
 // the promise sits in the queue, so a later clip that decodes first still waits.
 function enqueue(id, text) {
@@ -119,8 +151,8 @@ async function pump() {
   try {
     buffer = await item.ready;
   } catch (e) {
-    // Report it anyway, or `speak` would wait for a clip that will never play.
-    post("ended", { id: item.id });
+    // Report it anyway, or the server would wait for a clip that will never play.
+    if (!item.cancelled) post("ended", { id: item.id });
     current = null;
     return pump();
   }
@@ -129,8 +161,10 @@ async function pump() {
   source.buffer = buffer;
   source.connect(ctx.destination);
   source.onended = () => {
-    if (!item.cancelled) post("ended", { id: item.id });
-    remember(item.text);
+    if (!item.cancelled) {
+      post("ended", { id: item.id });
+      remember(item.text);
+    }
     $("now").textContent = "";
     current = null;
     // A short breath between clips, which Kokoro trims from both ends.
@@ -140,8 +174,8 @@ async function pump() {
   source.start();
 }
 
-// Drop everything: the queue and whatever is playing. Shared by our own Stop
-// button and by Claude's `stop` tool.
+// Drop everything, the queue and whatever is playing, without reporting any
+// of it as heard. The server sends this before a jump, a Stop or a new tour.
 function flush() {
   for (const item of queue) item.cancelled = true;
   queue = [];
@@ -149,6 +183,9 @@ function flush() {
     current.item.cancelled = true;
     if (current.source) current.source.stop();
   }
+  // A source stopped while the context is suspended does not fire onended
+  // until it runs again, and the next clip would sit there.
+  if (paused) togglePause();
 }
 
 function connect() {
@@ -158,7 +195,10 @@ function connect() {
     const ev = JSON.parse(m.data);
     if (ev.type === "hello") setState(`listening · voice ${ev.voice}`);
     else if (ev.type === "clip") enqueue(ev.id, ev.text);
-    else if (ev.type === "stop") flush();
+    else if (ev.type === "flush") flush();
+    // Next outside a tour: end the current clip early, counted as heard.
+    else if (ev.type === "skip") { if (current && current.source) current.source.stop(); }
+    else if (ev.type === "state") showTour(ev.tour);
   };
   es.onerror = () => {
     // EventSource retries on its own after a dropped connection. It gives up
@@ -172,32 +212,30 @@ function connect() {
   };
 }
 
+function togglePause() {
+  paused = !paused;
+  if (paused) ctx.suspend(); else ctx.resume();
+  $("pause").textContent = paused ? "Resume" : "Pause";
+}
+
 $("start").onclick = () => {
   ctx = new (window.AudioContext || window.webkitAudioContext)();
   ctx.resume();
   $("start").disabled = true;
-  for (const b of ["pause", "skip", "stop"]) $(b).disabled = false;
+  for (const b of ["prev", "pause", "next", "stop"]) $(b).disabled = false;
   connect();
 };
 
-$("pause").onclick = () => {
-  paused = !paused;
-  if (paused) ctx.suspend(); else ctx.resume();
-  $("pause").textContent = paused ? "Resume" : "Pause";
-};
+$("pause").onclick = togglePause;
+$("prev").onclick = () => post("control", { action: "prev" });
+$("next").onclick = () => post("control", { action: "next" });
 
-// Skip ends the current clip early but counts it as heard, so the walkthrough
-// carries on with the next one.
-$("skip").onclick = () => { if (current && current.source) current.source.stop(); };
-
-// Stop also tells the server, and Claude's waiting `speak` returns saying the
-// listener stopped, so the walkthrough pauses rather than talking on.
-// Resumes a paused context too: a source stopped while suspended does not
-// fire onended until the context runs again, and the next clip would sit there.
+// Stop holds a tour where it is -- it stays held until Continue, whatever
+// Claude is doing at that moment -- and the waiting Claude is told, so it can
+// ask what you would like. Outside a tour it cuts a `speak` short.
 $("stop").onclick = () => {
-  flush();
-  post("stopped");
-  if (paused) $("pause").onclick();
+  const action = tour && tour.state === "stopped" ? "continue" : "stop";
+  post("control", { action });
 };
 
 if (!token) setState("no token in the link: get one with ./dev narrator-url", true);

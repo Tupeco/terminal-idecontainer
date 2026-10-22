@@ -1084,29 +1084,33 @@ behaviours that lose.
 ## Narrated walkthroughs
 
 `:Walkthrough` opens Claude Code in a split on the right and gives it a
-prompt. Claude plans a handful of stops, then for each one highlights the
-lines in your code window (never in its own terminal) and explains them. With
-the narrator (a project set up `--with-narrator`; see README.md) the
-explanation is spoken in the player page, which you open from
-`./dev narrator-url` on the host. Without it, the explanation appears in
-Claude's chat.
+prompt. Claude outlines a handful of stops, then writes them a few at a time.
+Each stop is highlighted in your code window (never in Claude's own terminal)
+while it is explained. With the narrator (a project set up `--with-narrator`;
+see README.md) the explanation is spoken in the player page, which you open
+from `./dev narrator-url` on the host. The narrator moves the highlight
+itself, so one stop follows the next without waiting for Claude. Without the
+narrator, Claude moves the highlight and writes the explanation in its chat.
 
-Claude reaches the editor through nvim-mcp, which connects to the Neovim
-whose working directory is in the same git repository as Claude's. So start
-`nvim` in the project. A Neovim started *after* Claude is not connected
-automatically; Claude can still find it with nvim-mcp's `get_targets` and
-`connect` tools, and the prompt tells it to.
+The highlight reaches the Neovim whose working directory is in the same
+project as Claude's, so start `nvim` in the project. If the narrator says it
+found no Neovim, the tour still plays, just without the highlight.
 
 While it talks:
 
-- **Pause** in the player holds the voice, and Claude waits with it, so you
-  can read for as long as you like.
-- **Skip** cuts the current stop short and goes on to the next.
-- **Stop** ends the walkthrough. Claude stops and asks you how to continue,
-  so typing a follow-up question into its pane works too.
+- **Previous** / **Next** go back or forward a stop, highlight included.
+  Previous after the end replays the last stop.
+- **Pause** holds the voice, and the tour waits with it, so you can read for
+  as long as you like.
+- **Stop** holds the tour where it is, even between stops while Claude is
+  still writing, and Claude asks what you would like. Ask a question in its
+  pane; it can answer aloud while the tour stays held. **Continue** (or
+  telling Claude to carry on) resumes from the stop you were on.
 
 The tool calls are visible in Claude's pane. If the highlight lands somewhere
-odd, `:WalkthroughClear` removes it, and the next stop moves it anyway.
+odd, `:WalkthroughClear` removes it, and the next stop moves it anyway. In a
+project nested so deeply that its path does not fit in a unix socket name
+(about 107 bytes), Neovim warns at startup that Claude cannot reach it.
 
 ## Which tool for which job
 

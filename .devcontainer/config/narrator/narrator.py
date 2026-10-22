@@ -1,10 +1,28 @@
 """Narrator: a text-to-speech MCP server whose speaker is a browser tab.
 
-Claude Code calls `speak`; this process synthesises the text with Kokoro and
-hands the audio to every player page that is connected, and `speak` returns
-only once a player reports that the last of it has finished playing. That
-return is what keeps a narrated walkthrough in step: Claude highlights a range
-in Neovim, speaks about it, and moves on only when you have heard it.
+Two ways to use it from Claude Code:
+
+  A tour (`tour_start`, `tour_add`, `tour_wait`): a narrated walkthrough as a
+  queue of stops, each a range of a file plus what to say about it. This
+  process plays the stops in order, moving the highlight in Neovim itself
+  (through config/nvim/lua/walkthrough.lua) as each one starts, and
+  synthesising the next while the current one plays. The listener's player has
+  Previous, Next, Pause and Stop/Continue.
+
+  `speak`: one utterance, which returns once a player reports it has finished
+  playing. For answering a question after the listener has stopped a tour.
+
+Why a queue rather than Claude calling `speak` once per stop, as the first
+version did: every stop then cost a full turn of the agent between the end of
+one narration and the start of the next -- about 25 s of silence per stop,
+measured, nearly all of it Claude composing the next stop. Stop pressed in that
+gap was lost, too, because the next `speak` began afresh; and Previous could
+not move the highlight back, since only Claude could move it. With the stops
+queued here, Claude writes ahead while the listener listens: `tour_add`
+returns at once, so the first stops play while Claude is still reading the
+code for later ones, and a large codebase does not mean a long silence before
+the first word. The cost is that the narrator needs its own connection to
+Neovim (pynvim, to the socket the nvim-mcp plugin opens).
 
 Why a browser rather than a sound device: the container has none, and there is
 no single way to give it one. Docker Desktop for Mac cannot pass a host audio
@@ -21,7 +39,8 @@ One long-lived process serves both halves on one port (6769 in the container):
     /               the player page            } all of these need ?token=,
     /events         Server-Sent Events stream  } since the port is published
     /clip/<id>.wav  one synthesised clip       } on every interface of the host
-    /ended, /stopped  the player's reports back
+    /ended          the player: a clip finished playing
+    /control        the player's buttons: prev, next, stop, continue
 
 Long-lived rather than a stdio server that Claude Code spawns per session: two
 sessions would fight over the port, the model would load (1-2 s) for every
@@ -39,22 +58,28 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import glob
 import hmac
 import io
 import json
 import logging
+import os
 import re
 import secrets
 import time
 import wave
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import numpy as np
+import pynvim
 import uvicorn
 from kokoro_onnx import Kokoro
 from mcp.server.mcpserver import MCPServer
+from pydantic import BaseModel, Field
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
@@ -65,12 +90,14 @@ HERE = Path(__file__).resolve().parent
 
 # Kept around so a player that is a clip behind can still fetch it. Far more
 # than one utterance ever needs; the point is only that memory stays bounded.
+# A tour's clips are not counted: they stay until the next tour, so Previous
+# can replay any stop without synthesising it again.
 CLIP_CACHE = 64
 
-# How long `speak` waits for playback before giving up. Generous on purpose: a
-# listener may pause mid-sentence to read the code, and timing out under them
-# would let Claude race ahead. Disconnects and Stop end the wait sooner.
-SPEAK_WAIT_CAP = 15 * 60
+# How long `speak` and `tour_wait` wait before giving up. Generous on purpose:
+# a listener may pause to read the code, and timing out under them would let
+# Claude race ahead. Disconnects and Stop end the wait sooner.
+WAIT_CAP = 15 * 60
 
 # Text is synthesised a few sentences at a time, so the first one plays while
 # the rest is still being generated. Measured on a Docker Desktop VM on Apple
@@ -81,6 +108,11 @@ SPEAK_WAIT_CAP = 15 * 60
 MIN_CHUNK_CHARS = 60
 
 SENTENCE_END = re.compile(r"(?<=[.!?;:])\s+")
+
+NO_PLAYER = (
+    "No player is listening. Ask the user to open the player page: on the host, "
+    "`./dev narrator-url` prints its address."
+)
 
 
 def split_text(text: str) -> list[str]:
@@ -120,24 +152,124 @@ class Clip:
     done: asyncio.Event = field(default_factory=asyncio.Event)
 
 
+class StopSpec(BaseModel):
+    """One stop of a tour, as Claude sends it."""
+
+    file: str = Field(description="Path relative to project_root, or absolute")
+    first: int = Field(description="First line to highlight, 1-based")
+    last: int = Field(description="Last line to highlight, inclusive")
+    label: str = Field(description="A few words shown above the highlight")
+    text: str = Field(description="What to say about these lines: one to four sentences, written for the ear")
+
+
+@dataclass
+class Stop:
+    index: int
+    spec: StopSpec
+    clips: list[Clip] = field(default_factory=list)
+    ready: asyncio.Event = field(default_factory=asyncio.Event)
+
+
+class NvimLink:
+    """The narrator's own connection to Neovim, for moving the highlight.
+
+    pynvim is synchronous and not thread-safe, so every call goes through one
+    dedicated thread; the event loop never blocks on Neovim. It connects to the
+    socket the nvim-mcp plugin opens (see init.lua), which is a plain Neovim
+    RPC socket, so no second server has to be started in the editor.
+    """
+
+    def __init__(self, path: str) -> None:
+        self.path = path
+        self.pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="nvim")
+        self.nvim: pynvim.Nvim | None = None
+
+    def _call(self, code: str, args: tuple) -> Any:
+        if self.nvim is None:
+            self.nvim = pynvim.attach("socket", path=self.path)
+        try:
+            return self.nvim.exec_lua(code, *args)
+        except (OSError, EOFError):
+            # Neovim restarted or closed: drop the handle so the next call
+            # tries again rather than failing forever on a dead socket.
+            self.nvim = None
+            raise
+
+    async def lua(self, code: str, *args: Any) -> Any:
+        return await asyncio.get_running_loop().run_in_executor(self.pool, self._call, code, args)
+
+    @staticmethod
+    def find(project_root: str) -> str | None:
+        """The newest live nvim-mcp socket for this project root.
+
+        The plugin names it /tmp/nvim-mcp.<root with / as %>.<pid>.sock (the
+        v0.7.2 scheme the nvim-mcp server globs for too). Failing a match for
+        the root -- Claude's working directory may be a subdirectory of the
+        repository Neovim was opened in -- a single socket on the machine is
+        taken as the one meant.
+        """
+        root = os.path.realpath(project_root).rstrip("/")
+        mine = glob.glob(f"/tmp/nvim-mcp.{glob.escape(root.replace('/', '%'))}.*.sock")
+        candidates = mine or glob.glob("/tmp/nvim-mcp.*.sock")
+        if not mine and len(candidates) != 1:
+            return None
+        for path in sorted(candidates, key=os.path.getmtime, reverse=True):
+            try:
+                pynvim.attach("socket", path=path).close()
+                return path
+            except OSError:
+                continue
+        return None
+
+
+class Tour:
+    def __init__(self, title: str, root: str, nvim: NvimLink | None) -> None:
+        self.title = title
+        self.root = root
+        self.nvim = nvim
+        self.stops: list[Stop] = []
+        self.pos = 0
+        # Claude has sent the last stop.
+        self.complete = False
+        # "playing", "stopped" (the listener pressed Stop) or "finished".
+        self.state = "playing"
+        # Where Previous or Next asked to go, picked up by the driver.
+        self.jump: int | None = None
+        # The listener stopped since Claude last heard about it.
+        self.stop_unreported = False
+
+    def where(self) -> str:
+        if not self.stops:
+            return "no stops yet"
+        i = min(self.pos, len(self.stops) - 1)
+        return f"stop {i + 1} of {len(self.stops)} ({self.stops[i].spec.label!r})"
+
+
 class Narrator:
     def __init__(self, kokoro: Kokoro, voice: str, speed: float) -> None:
         self.kokoro = kokoro
         self.voice = voice
         self.speed = speed
         self.clips: OrderedDict[int, Clip] = OrderedDict()
+        self.pinned: set[int] = set()
         self.next_id = 1
         self.players: set[asyncio.Queue[dict]] = set()
-        # Set when the players change or a listener presses Stop, so a waiting
-        # `speak` re-checks why it is waiting.
+        # Replaced on every change worth re-checking (a player came or went, a
+        # button was pressed, a stop was added or synthesised), so anything
+        # waiting wakes up and looks again. Waiters take it *before* checking
+        # their condition, so a change in between is never missed.
         self.wake = asyncio.Event()
         self.stopped_by_listener = False
+        self.tour: Tour | None = None
+        self.tasks: list[asyncio.Task] = []
         # One utterance at a time. Two interleaved would be unintelligible,
         # and the second caller's wait would end on the first one's audio.
         self.lock = asyncio.Lock()
         # Kokoro is not documented as thread-safe; synthesis runs in a worker
         # thread, one at a time.
         self.synth_lock = asyncio.Lock()
+
+    # -- plumbing ------------------------------------------------------------
 
     def broadcast(self, event: dict) -> None:
         for q in self.players:
@@ -147,7 +279,15 @@ class Narrator:
         self.wake.set()
         self.wake = asyncio.Event()
 
-    async def synth(self, text: str, voice: str, speed: float) -> Clip:
+    async def wait_any(self, wake: asyncio.Event, *events: asyncio.Event, timeout: float | None = None) -> None:
+        waits = [asyncio.ensure_future(e.wait()) for e in (wake, *events)]
+        try:
+            await asyncio.wait(waits, timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            for w in waits:
+                w.cancel()
+
+    async def synth(self, text: str, voice: str, speed: float, pin: bool = False) -> Clip:
         async with self.synth_lock:
             t = time.monotonic()
             samples, rate = await asyncio.to_thread(
@@ -157,23 +297,50 @@ class Narrator:
         self.next_id += 1
         log.info("clip %d: %.1fs of audio in %.1fs", clip.id, clip.seconds, time.monotonic() - t)
         self.clips[clip.id] = clip
-        while len(self.clips) > CLIP_CACHE:
-            self.clips.popitem(last=False)
+        if pin:
+            self.pinned.add(clip.id)
+        unpinned = [i for i in self.clips if i not in self.pinned]
+        for i in unpinned[: max(0, len(unpinned) - CLIP_CACHE)]:
+            del self.clips[i]
         return clip
+
+    def state_event(self) -> dict:
+        t = self.tour
+        if t is None:
+            return {"type": "state", "tour": None}
+        current = t.stops[min(t.pos, len(t.stops) - 1)].spec.label if t.stops else ""
+        return {
+            "type": "state",
+            "tour": {
+                "title": t.title,
+                "state": t.state,
+                "index": t.pos,
+                "total": len(t.stops),
+                "complete": t.complete,
+                "label": current,
+            },
+        }
+
+    def announce(self) -> None:
+        self.broadcast(self.state_event())
+        self.poke()
+
+    # -- single utterances ---------------------------------------------------
 
     async def speak(self, text: str, voice: str | None, speed: float | None, wait: bool) -> str:
         voice = voice or self.voice
         if voice not in self.kokoro.get_voices():
             return f"Unknown voice {voice!r}. Voices: {', '.join(self.kokoro.get_voices())}"
+        if self.tour and self.tour.state == "playing":
+            return (
+                "A tour is playing, and speech now would talk over it. Add to the tour "
+                "with tour_add instead, or wait for it with tour_wait."
+            )
         chunks = split_text(text)
         if not chunks:
             return "Nothing to say: the text was empty."
         if not self.players:
-            return (
-                "No player is listening, so nothing was spoken. Ask the user to open the "
-                "player page: on the host, `./dev narrator-url` prints its address. "
-                "Then call speak again."
-            )
+            return NO_PLAYER + " Then call speak again."
         async with self.lock:
             self.stopped_by_listener = False
             last: Clip | None = None
@@ -194,30 +361,238 @@ class Narrator:
             return await self.wait_for(last)
 
     async def wait_for(self, clip: Clip) -> str:
-        deadline = time.monotonic() + SPEAK_WAIT_CAP
+        deadline = time.monotonic() + WAIT_CAP
         while True:
+            wake = self.wake
             if clip.done.is_set():
                 return "Spoken."
             if self.stopped_by_listener:
-                return (
-                    "The listener pressed Stop. Pause the walkthrough and ask them how "
-                    "to continue; do not carry on speaking."
-                )
+                return "The listener pressed Stop. Ask them how to continue; do not carry on speaking."
             if not self.players:
                 return "The player disconnected before playback finished."
             left = deadline - time.monotonic()
             if left <= 0:
                 return "Gave up waiting for playback after 15 minutes."
-            wake = self.wake
-            done = asyncio.ensure_future(clip.done.wait())
-            woke = asyncio.ensure_future(wake.wait())
-            await asyncio.wait({done, woke}, timeout=left, return_when=asyncio.FIRST_COMPLETED)
-            done.cancel()
-            woke.cancel()
+            await self.wait_any(wake, clip.done, timeout=left)
 
-    def stop(self) -> None:
-        self.stopped_by_listener = True
-        self.broadcast({"type": "stop"})
+    # -- tours ---------------------------------------------------------------
+
+    async def tour_start(self, project_root: str, title: str) -> str:
+        for task in self.tasks:
+            task.cancel()
+        self.tasks = []
+        if self.tour and self.tour.nvim:
+            await self.highlight_clear(self.tour)
+        self.pinned.clear()
+        self.broadcast({"type": "flush"})
+        path = await asyncio.to_thread(NvimLink.find, project_root)
+        self.tour = Tour(title, project_root, NvimLink(path) if path else None)
+        self.tasks = [asyncio.create_task(self.synth_worker(self.tour)), asyncio.create_task(self.drive(self.tour))]
+        self.announce()
+        notes = [f"Tour {title!r} started."]
+        notes.append(
+            f"Neovim found at {path}; each stop's lines are highlighted as it plays."
+            if path
+            else "No Neovim for this project was found, so the highlight will not move; "
+            "the narration still plays. Ask the user to open nvim in the project if they want it."
+        )
+        if not self.players:
+            notes.append(NO_PLAYER + " Stops will wait for it.")
+        notes.append("Add the first stops now with tour_add, so playback can begin.")
+        return " ".join(notes)
+
+    def tour_add(self, stops: list[StopSpec], last: bool) -> str:
+        t = self.tour
+        if t is None:
+            return "No tour is open. Start one with tour_start."
+        if t.complete:
+            return "This tour was already marked complete; start a new one with tour_start."
+        bad = [s.label for s in stops if not s.text.strip()]
+        if bad:
+            return f"Nothing was added: these stops have no text: {bad}"
+        for spec in stops:
+            t.stops.append(Stop(len(t.stops), spec))
+        t.complete = last
+        self.announce()
+        return self.tour_report(t)
+
+    def tour_report(self, t: Tour) -> str:
+        played = min(t.pos, len(t.stops))
+        ahead = len(t.stops) - played
+        parts = [f"{len(t.stops)} stops queued; now at {t.where()}; {ahead} not yet heard."]
+        if t.stop_unreported or t.state == "stopped":
+            t.stop_unreported = False
+            parts.append(
+                f"The listener pressed Stop at {t.where()}. Stop adding stops and ask them "
+                "what they would like: answer questions in chat or with speak, then "
+                "tour_resume to carry on."
+            )
+        elif t.state == "finished":
+            parts.append("The tour has finished playing.")
+        elif not t.complete:
+            parts.append(
+                ("The listener is about to run out: add the next stops soon."
+                 if ahead <= 1 else "Add the next stops when they are ready.")
+                + " Mark the final batch with last=true."
+            )
+        if not self.players:
+            parts.append(NO_PLAYER)
+        return " ".join(parts)
+
+    async def tour_wait(self) -> str:
+        t = self.tour
+        if t is None:
+            return "No tour is open."
+        deadline = time.monotonic() + WAIT_CAP
+        while True:
+            wake = self.wake
+            if t is not self.tour:
+                return "A new tour replaced this one."
+            if t.state == "finished":
+                return f"The tour finished: all {len(t.stops)} stops were heard."
+            if t.state == "stopped":
+                t.stop_unreported = False
+                return (
+                    f"The listener pressed Stop at {t.where()}. Ask them what they would like: "
+                    "answer questions in chat or with speak, then call tour_resume and "
+                    "tour_wait to carry on (they can also press Continue in the player)."
+                )
+            if t.pos >= len(t.stops) and not t.complete:
+                return (
+                    "The listener has heard every stop queued so far. Add more with tour_add "
+                    "(last=true on the final batch), then tour_wait again."
+                )
+            if not self.players:
+                return NO_PLAYER + " The tour is paused until one connects."
+            left = deadline - time.monotonic()
+            if left <= 0:
+                return f"Still playing after 15 minutes, at {t.where()}; call tour_wait again."
+            await self.wait_any(wake, timeout=left)
+
+    def tour_resume(self) -> str:
+        t = self.tour
+        if t is None:
+            return "No tour is open."
+        if t.state == "stopped":
+            self.control("continue")
+            return f"Resumed at {t.where()}. Call tour_wait to follow it."
+        return f"The tour is {t.state}, at {t.where()}; nothing to resume."
+
+    async def synth_worker(self, t: Tour) -> None:
+        """Synthesise every queued stop, the current one and those after it first."""
+        while True:
+            wake = self.wake
+            pending = [s for s in t.stops[t.pos:] + t.stops[: t.pos] if not s.ready.is_set()]
+            if not pending:
+                await self.wait_any(wake)
+                continue
+            stop = pending[0]
+            for chunk in split_text(stop.spec.text):
+                stop.clips.append(await self.synth(chunk, self.voice, self.speed, pin=True))
+            stop.ready.set()
+            self.poke()
+
+    async def highlight(self, t: Tour, stop: Stop) -> None:
+        if not t.nvim:
+            return
+        s = stop.spec
+        path = s.file if os.path.isabs(s.file) else os.path.join(t.root, s.file)
+        try:
+            await t.nvim.lua(
+                "return require('walkthrough').show(...)", path, s.first, s.last, s.label
+            )
+        except Exception as e:  # noqa: BLE001 -- a lost highlight must not stop the tour
+            log.warning("highlight failed for stop %d: %s", stop.index + 1, e)
+
+    async def highlight_clear(self, t: Tour) -> None:
+        if t.nvim:
+            try:
+                await t.nvim.lua("return require('walkthrough').clear()")
+            except Exception as e:  # noqa: BLE001
+                log.warning("clearing the highlight failed: %s", e)
+
+    async def drive(self, t: Tour) -> None:
+        """Play the tour: highlight a stop, send its clips, wait for the last to end."""
+        while True:
+            wake = self.wake
+            if t.jump is not None:
+                t.pos, t.jump = t.jump, None
+                self.announce()
+                continue
+            if t.state == "finished":
+                return
+            if t.state == "stopped" or not self.players:
+                await self.wait_any(wake)
+                continue
+            if t.pos >= len(t.stops):
+                if t.complete:
+                    t.state = "finished"
+                    await self.highlight_clear(t)
+                    self.announce()
+                    return
+                await self.wait_any(wake)
+                continue
+            stop = t.stops[t.pos]
+            if not stop.ready.is_set():
+                await self.wait_any(wake, stop.ready)
+                continue
+
+            await self.highlight(t, stop)
+            self.announce()
+            for clip in stop.clips:
+                clip.done.clear()
+                self.broadcast({"type": "clip", "id": clip.id, "text": clip.text})
+            last = stop.clips[-1]
+            # Until the last clip ends, or something else needs the driver.
+            while True:
+                wake = self.wake
+                if last.done.is_set() or t.jump is not None or t.state != "playing" or not self.players:
+                    break
+                await self.wait_any(wake, last.done)
+            if last.done.is_set() and t.jump is None and t.state == "playing":
+                t.pos += 1
+                self.announce()
+            # Otherwise the loop top handles the jump, the stop or the missing
+            # player, and a stop that was cut short is played again from its
+            # start when the tour carries on.
+
+    def control(self, action: str) -> None:
+        """A player button. Previous and Next jump within a tour; Stop holds it."""
+        t = self.tour
+        # Previous still means something once a tour has finished: hear its
+        # last stop again. Otherwise the buttons act on a plain `speak`.
+        if t is None or (t.state == "finished" and action != "prev"):
+            if action == "stop":
+                self.stopped_by_listener = True
+                self.broadcast({"type": "flush"})
+                self.poke()
+            elif action == "next":
+                self.broadcast({"type": "skip"})
+            return
+        self.broadcast({"type": "flush"})
+        if action == "prev":
+            target = max(0, min(t.pos, len(t.stops)) - 1)
+            if t.state == "finished":
+                # Back into a finished tour: play its last stop again.
+                t.state = "playing"
+                self.tasks.append(asyncio.create_task(self.drive(t)))
+            t.jump = target
+        elif action == "next":
+            t.jump = min(t.pos + 1, len(t.stops))
+        elif action == "stop" and t.state == "playing":
+            t.state = "stopped"
+            t.stop_unreported = True
+            log.info("listener pressed Stop at %s", t.where())
+        elif action == "continue" and t.state == "stopped":
+            t.state = "playing"
+        self.announce()
+
+    def player_joined(self) -> None:
+        # A stop's clips went out before this player was listening, so it
+        # would wait for audio it never got. Start the stop again for everyone.
+        if self.tour and self.tour.state == "playing" and self.tour.pos < len(self.tour.stops):
+            self.broadcast({"type": "flush"})
+            self.tour.jump = self.tour.pos
         self.poke()
 
 
@@ -266,36 +641,71 @@ def build_app(narrator: Narrator, token: str) -> ASGIApp:
     mcp = MCPServer(
         "narrator",
         instructions=(
-            "Speaks text aloud to the user through a browser player page. Keep each "
-            "speak call to one idea (one to four sentences) about code you have just "
-            "shown, and let it finish before moving the highlight on."
+            "Speaks to the user through a browser player page, and plays narrated code "
+            "walkthroughs. For a walkthrough use a tour: tour_start, then tour_add a few "
+            "stops at a time as you write them (it returns at once and playback starts "
+            "straight away), last=true on the final batch, then tour_wait. Use speak only "
+            "for a single remark, such as answering a question after the listener stops."
         ),
     )
 
     @mcp.tool()
-    async def speak(text: str, voice: str | None = None, speed: float | None = None, wait: bool = True) -> str:
-        """Say `text` aloud in the user's player page.
+    async def tour_start(project_root: str, title: str) -> str:
+        """Begin a narrated walkthrough, replacing any previous one.
 
-        Blocks until the player has finished playing it (when `wait` is true, the
-        default), so code you highlight before the call stays on screen while it
-        is being explained. Write for the ear: no markdown, no code symbols read
-        out character by character; say "the setup function", not "cmd_setup()".
+        `project_root` is your working directory (absolute); stop paths are
+        relative to it, and it is how the narrator finds the user's Neovim to
+        move the highlight. Follow with tour_add.
+        """
+        return await narrator.tour_start(project_root, title)
+
+    @mcp.tool()
+    async def tour_add(stops: list[StopSpec], last: bool = False) -> str:
+        """Queue stops on the open tour. Returns at once; playback runs meanwhile.
+
+        Send the first one or two stops as soon as they are written so the
+        listener is not left waiting, then keep adding in small batches while
+        you read on. Each stop is highlighted in Neovim while its text is
+        spoken. Pass last=true with the final batch. The reply says where the
+        listener is, and whether they pressed Stop.
+        """
+        return narrator.tour_add(stops, last)
+
+    @mcp.tool()
+    async def tour_wait() -> str:
+        """Block until the tour finishes, the listener presses Stop, or every queued stop has been heard."""
+        return await narrator.tour_wait()
+
+    @mcp.tool()
+    async def tour_resume() -> str:
+        """Carry on a tour the listener stopped, from the stop they stopped at."""
+        return narrator.tour_resume()
+
+    @mcp.tool()
+    async def speak(text: str, voice: str | None = None, speed: float | None = None, wait: bool = True) -> str:
+        """Say `text` aloud in the user's player page, outside a tour.
+
+        For a single remark, such as answering a question once the listener has
+        stopped a tour; refused while a tour is playing. Blocks until the player
+        has finished it (when `wait` is true, the default). Write for the ear:
+        no markdown, no code symbols read out character by character.
         `voice` is a Kokoro voice id (see `status`); `speed` defaults to 1.0.
         """
         return await narrator.speak(text, voice, speed, wait)
 
     @mcp.tool()
     async def stop() -> str:
-        """Stop playback at once and drop anything still queued."""
-        narrator.stop()
+        """Stop playback at once: holds a playing tour, or cuts a speak short."""
+        narrator.control("stop")
         return "Stopped."
 
     @mcp.tool()
     async def status() -> dict:
-        """Whether a player is listening, plus the current voice and the voices available."""
+        """Whether a player is listening, the tour's progress, and the voices available."""
         return {
             "players_connected": len(narrator.players),
             "player_url_hint": "run ./dev narrator-url on the host",
+            "tour": narrator.state_event()["tour"],
             "voice": narrator.voice,
             "speed": narrator.speed,
             "voices": narrator.kokoro.get_voices(),
@@ -316,13 +726,14 @@ def build_app(narrator: Narrator, token: str) -> ASGIApp:
         if not authorised(request):
             return denied
         q: asyncio.Queue[dict] = asyncio.Queue()
+        q.put_nowait({"type": "hello", "voice": narrator.voice})
+        q.put_nowait(narrator.state_event())
         narrator.players.add(q)
-        narrator.poke()
+        narrator.player_joined()
         log.info("player connected from %s (%d now)", request.client and request.client.host, len(narrator.players))
 
         async def stream():
             try:
-                yield f"data: {json.dumps({'type': 'hello', 'voice': narrator.voice})}\n\n"
                 while True:
                     try:
                         event = await asyncio.wait_for(q.get(), timeout=15)
@@ -358,11 +769,13 @@ def build_app(narrator: Narrator, token: str) -> ASGIApp:
             c.done.set()
         return JSONResponse({"ok": True})
 
-    async def stopped(request: Request) -> Response:
+    async def control(request: Request) -> Response:
         if not authorised(request):
             return denied
-        log.info("listener pressed Stop")
-        narrator.stop()
+        action = (await request.json()).get("action", "")
+        if action not in ("prev", "next", "stop", "continue"):
+            return JSONResponse({"ok": False, "error": f"unknown action {action!r}"}, 400)
+        narrator.control(action)
         return JSONResponse({"ok": True})
 
     for path, endpoint, methods in (
@@ -370,7 +783,7 @@ def build_app(narrator: Narrator, token: str) -> ASGIApp:
         ("/events", events, ["GET"]),
         ("/clip/{id:int}.wav", clip, ["GET"]),
         ("/ended", ended, ["POST"]),
-        ("/stopped", stopped, ["POST"]),
+        ("/control", control, ["POST"]),
     ):
         mcp.custom_route(path, methods=methods)(endpoint)
 
