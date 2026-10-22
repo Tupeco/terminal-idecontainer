@@ -31,7 +31,8 @@ Host-side commands (run `./dev` with no arguments for the full list):
 ```sh
 ./dev setup <name> [--with-orca [--orca-port <port>] | --without-orca]
                    [--with-postgres | --without-postgres]
-                   [--with-narrator [--narrator-port <port>] | --without-narrator] [--force]
+                   [--with-narrator [--narrator-port <port>] [--narrator-model int8|full]
+                    | --without-narrator] [--force]
                                # render .devcontainer/docker-compose.yml from the template
 ./dev reconfigure [same options] # setup <current name> --force, name read from the file
 ./dev up                       # show build parameters, confirm, build if needed, start
@@ -57,7 +58,7 @@ Several files are parsed by other files, so their format is a contract:
   count (`-lt 12`) in the Dockerfile's verification step.
 - **`docker-compose.yml.template` → `docker-compose.yml`.** `./dev setup`
   substitutes `__PROJECT_NAME__`, `__PROJECT_HOSTNAME__`, `__WITH_ORCA__`,
-  `__WITH_POSTGRES__`, `__WITH_NARRATOR__`, `__ORCA_PORT__` and
+  `__WITH_POSTGRES__`, `__WITH_NARRATOR__`, `__NARRATOR_MODEL__`, `__ORCA_PORT__` and
   `__NARRATOR_PORT__`. The rendered file
   is gitignored and machine-specific; edit the template, never the rendered
   file. `dev` finds its own mount entries between the `# >>> extra mounts` /
@@ -122,7 +123,12 @@ Several files are parsed by other files, so their format is a contract:
   (`tour_start`/`tour_add`/`tour_wait`): the narrator plays queued stops back
   to back and moves the highlight itself by calling `walkthrough.show()`
   through pynvim on the nvim-mcp plugin's socket, so `show()`'s signature is a
-  contract between `narrator.py` and `walkthrough.lua`. Audio leaves the container only through that
+  contract between `narrator.py` and `walkthrough.lua`. The step is three
+  layers, ordered by how rarely they change: cargo build and venv, then the
+  model behind `ARG NARRATOR_MODEL` (`int8` default or `full`, from
+  `setup --narrator-model`; fp16 is excluded because it yields NaN on CPU),
+  then the `COPY` of `config/narrator/`, so editing the narrator rebuilds
+  nothing. Audio leaves the container only through that
   browser page, on container port 6769, which is published per project from
   16868 up, chosen by `choose_port` the same way as Orca's. The MCP endpoint
   `/mcp` on that port refuses non-loopback clients, and the player needs the

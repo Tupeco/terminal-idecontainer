@@ -218,7 +218,7 @@ workspace volume is untouched by container restarts.
 | man-db, manpages, bash-completion | Working `man` and tab completion; see TIPS.md |
 | satellite.nvim | PyCharm-style marker bar: diagnostics, git hunks and symbol occurrences on the scrollbar |
 | Node.js 22 | Only for npx-based MCP servers |
-| nvim-mcp 0.7.2, Kokoro (int8) | Narrated walkthroughs, only `--with-narrator`; see below |
+| nvim-mcp 0.7.2, Kokoro (int8 or full) | Narrated walkthroughs, only `--with-narrator`; see below |
 
 ## Choosing between the three editors
 
@@ -493,6 +493,13 @@ Set it up per project:
 ./dev up
 ./dev narrator-url                        # where to listen
 ```
+
+The speech model is a setup choice too. `--narrator-model int8` is the
+default (114 MB). `--narrator-model full` (326 MB) sounds clearer, but it
+synthesises about three times slower, barely keeping up with playback; see
+Known caveats. `reconfigure --narrator-model full` followed by `./dev up`
+changes it, and rebuilds only the step that downloads the model. The
+narrator's `status` tool says which model is loaded.
 
 Open the address that `narrator-url` prints in whichever browser should do
 the listening, and press **Start listening**. That browser can be on this
@@ -849,13 +856,18 @@ elevates for apt on its own.
   in the Dockerfile and the plugin's `tag` in `init.lua` move together.
   Upstream publishes no release binaries, so `--with-narrator` builds it with
   cargo, which adds about a minute and a half to that step.
-- **Narration starts a beat late, and only after a click.** Kokoro needs
-  about 0.67 s of CPU per second of speech on a Docker Desktop VM on Apple
-  silicon (int8 model, measured). The narrator hides most of that by
-  synthesising the next sentence while the current one plays, but the first
-  sentence of each stop still waits a second or two. Browsers play no audio
-  until the page has been clicked, which is why the player has a **Start
-  listening** button.
+- **Narration starts a beat late, and only after a click.** With the default
+  int8 model, Kokoro needs about 0.35 s of CPU per second of speech on a
+  Docker Desktop VM on Apple silicon, and 0.67 s for the first sentence after
+  loading (measured). The narrator synthesises a stop ahead, so mostly you
+  only wait at the start of a tour. Browsers play no audio until the page has
+  been clicked, which is why the player has a **Start listening** button.
+- **The `full` narrator model is barely faster than real time:** 0.98 s of
+  CPU per second of speech on the same machine. Synthesis just about keeps
+  pace with playback, so a busy CPU means pauses between sentences. The fp16
+  model upstream publishes is not offered at all. On onnxruntime's CPU
+  provider it produces NaN samples, which is silence, for almost any text;
+  it is meant for GPUs.
 - **The narrator pins `mcp` 2.x,** in which FastMCP became `MCPServer`. Code
   copied from v1 examples will not import (`mcp.server.fastmcp` raises on
   purpose).

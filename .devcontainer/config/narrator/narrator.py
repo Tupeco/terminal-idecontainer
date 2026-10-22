@@ -248,6 +248,7 @@ class Tour:
 class Narrator:
     def __init__(self, kokoro: Kokoro, voice: str, speed: float) -> None:
         self.kokoro = kokoro
+        self.model_name = "kokoro"
         self.voice = voice
         self.speed = speed
         self.clips: OrderedDict[int, Clip] = OrderedDict()
@@ -706,6 +707,7 @@ def build_app(narrator: Narrator, token: str) -> ASGIApp:
             "players_connected": len(narrator.players),
             "player_url_hint": "run ./dev narrator-url on the host",
             "tour": narrator.state_event()["tour"],
+            "model": narrator.model_name,
             "voice": narrator.voice,
             "speed": narrator.speed,
             "voices": narrator.kokoro.get_voices(),
@@ -809,6 +811,10 @@ def main() -> None:
     kokoro = Kokoro(args.model, args.voices)
     log.info("model loaded in %.1fs", time.monotonic() - t)
     narrator = Narrator(kokoro, args.voice, args.speed)
+    # The Dockerfile writes the --narrator-model choice beside the model, which
+    # is otherwise always called kokoro.onnx.
+    marker = Path(args.model).with_name("MODEL")
+    narrator.model_name = marker.read_text().strip() if marker.exists() else Path(args.model).name
     app = build_app(narrator, load_token(args.token_file))
     # Read by `narrator start` to know the server is up.
     log.info("listening on %s:%d", args.host, args.port)

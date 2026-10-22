@@ -26,6 +26,10 @@ services:
         WITH_POSTGRES: "__WITH_POSTGRES__"
         # `--with-narrator` likewise, for narrated walkthroughs.
         WITH_NARRATOR: "__WITH_NARRATOR__"
+        # The narrator's Kokoro model, `--narrator-model int8|full`: full
+        # sounds clearer and synthesises about three times slower. See the
+        # Dockerfile.
+        NARRATOR_MODEL: "__NARRATOR_MODEL__"
 
     # Tagged per project as well. Each copy of this template owns its Dockerfile
     # and will drift as you add packages to it; a shared tag would mean one

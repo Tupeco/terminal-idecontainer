@@ -42,7 +42,9 @@ First, once per copy of this template:
 
   setup <name> [--with-orca [--orca-port <port>] | --without-orca]
                [--with-postgres | --without-postgres]
-               [--with-narrator [--narrator-port <port>] | --without-narrator]
+               [--with-narrator [--narrator-port <port>]
+                                [--narrator-model int8|full]
+                | --without-narrator]
                [--force]
             Render docker-compose.yml from the template for a project called
             <name>. The name prefixes every named volume, so each project gets
@@ -56,9 +58,13 @@ First, once per copy of this template:
             --with-narrator installs the narrated-walkthrough tools (below)
             and publishes the narrator's player on a host port of its own,
             the first free one from 16868 up, or <port>; up starts it.
+            --narrator-model picks its speech model: int8 (114 MB, the
+            default) or full (326 MB), which sounds clearer but synthesises
+            about three times slower, barely keeping up with playback.
+            Changing it rebuilds only the model step.
             --force re-renders over an existing file, carrying your `mount`
-            entries, the Orca, PostgreSQL and narrator choices and their ports
-            across (use it after pulling template changes). A port moves only
+            entries, the Orca, PostgreSQL and narrator choices, their ports
+            and the narrator's model across (use it after pulling template changes). A port moves only
             if another project's container now publishes it too. Add the
             --with-/--without- flags to change a choice.
   reconfigure [the same options as setup, except <name> and --force]
@@ -152,6 +158,12 @@ narrator_setting() {
   awk -F'"' '/^[[:space:]]*WITH_NARRATOR:/ { print $2; exit }' "$COMPOSE_FILE"
 }
 
+# The narrator's Kokoro model, from NARRATOR_MODEL: int8 or full. Empty
+# for a file that predates the setting, where the Dockerfile's int8 applies.
+narrator_model_setting() {
+  awk -F'"' '/^[[:space:]]*NARRATOR_MODEL:/ { print $2; exit }' "$COMPOSE_FILE"
+}
+
 # Show the build parameters and ask before building. The parameters are already
 # settled in docker-compose.yml, so this is a last look rather than a question
 # that must be answered: with no terminal on stdin (a script, a pipe) it goes
@@ -206,6 +218,7 @@ confirm_build() {
       local nport
       nport="$(narrator_host_port)"
       printf '  Narrator      included, started by up, player on host port %s\n' "${nport:-(none)}"
+      printf '                Kokoro model %s\n' "$(narrator_model_setting | grep . || echo 'int8 (the default; this file predates the setting)')"
       warn_port_clash "$nport"
       ;;
     false) printf '  Narrator      not included\n' ;;
@@ -214,6 +227,7 @@ confirm_build() {
   printf '  To change:    ./dev reconfigure --with-orca | --without-orca\n'
   printf '                                  --with-postgres | --without-postgres\n'
   printf '                                  --with-narrator | --without-narrator\n'
+  printf '                                  --narrator-model int8 | full\n'
   printf 'Host SSH agent, found on every run:\n'
   printf '  %s (%s)\n' "$HOST_SSH_AUTH_SOCK" "$SSH_AGENT_NOTE"
   [ -t 0 ] || return 0
@@ -396,8 +410,9 @@ cmd_setup() {
   local name="" force="" orca="" orca_note="" carried="" host tmp
   local asked_port="" had_port="" postgres="" postgres_note=""
   local narrator="" narrator_note="" asked_nport="" had_nport=""
+  local nmodel="" nmodel_note="" nmodel_asked=""
   local orca_port="" orca_port_note="" narrator_port="" narrator_port_note=""
-  local usage="usage: ./dev setup <project-name> [--with-orca [--orca-port <port>] | --without-orca] [--with-postgres | --without-postgres] [--with-narrator [--narrator-port <port>] | --without-narrator] [--force]"
+  local usage="usage: ./dev setup <project-name> [--with-orca [--orca-port <port>] | --without-orca] [--with-postgres | --without-postgres] [--with-narrator [--narrator-port <port>] [--narrator-model int8|full] | --without-narrator] [--force]"
   while [ $# -gt 0 ]; do
     case "$1" in
       --force) force=1 ;;
@@ -417,6 +432,12 @@ cmd_setup() {
         asked_nport="$2"
         shift
         ;;
+      --narrator-model)
+        [ $# -ge 2 ] || die "$usage"
+        nmodel="$2"
+        nmodel_asked=1
+        shift
+        ;;
       -*) die "unknown option: $1" ;;
       *) [ -z "$name" ] || die "$usage"
          name="$1" ;;
@@ -432,6 +453,12 @@ cmd_setup() {
     [[ "$asked_nport" =~ ^[0-9]+$ ]] && [ "$asked_nport" -ge 1024 ] && [ "$asked_nport" -le 65535 ] \
       || die "--narrator-port takes a port number from 1024 to 65535 (got: $asked_nport)"
   fi
+  # The Dockerfile checks too, but failing here means before a build has
+  # started, with the choices spelt out.
+  case "$nmodel" in
+    "" | int8 | full) ;;
+    *) die "--narrator-model takes int8 or full (got: $nmodel)" ;;
+  esac
   [ -f "$TEMPLATE" ] || die "missing template: $TEMPLATE"
 
   # Compose's own rule for project names, enforced here so the failure arrives
@@ -467,10 +494,17 @@ cmd_setup() {
       narrator="$(narrator_setting)"
       [ -z "$narrator" ] || narrator_note=" (carried over)"
     fi
+    # The model too, even while the narrator is switched off, so turning it
+    # back on later does not quietly reset the model to int8.
+    if [ -z "$nmodel" ]; then
+      nmodel="$(narrator_model_setting)"
+      [ -z "$nmodel" ] || nmodel_note=" (carried over)"
+    fi
   fi
   orca="${orca:-false}"
   postgres="${postgres:-false}"
   narrator="${narrator:-false}"
+  nmodel="${nmodel:-int8}"
   if [ "$orca" = true ]; then
     choose_port "$name" "$asked_port" "$had_port" "$ORCA_PORT_BASE" "" \
       --orca-port "pair clients again"
@@ -488,6 +522,8 @@ cmd_setup() {
     narrator_port_note="$CHOSEN_PORT_NOTE"
   elif [ -n "$asked_nport" ]; then
     die "--narrator-port is for a project with the narrator; add --with-narrator"
+  elif [ -n "$nmodel_asked" ]; then
+    die "--narrator-model is for a project with the narrator; add --with-narrator"
   fi
 
   # Underscores are legal in a compose project name but not in a hostname.
@@ -502,7 +538,8 @@ cmd_setup() {
                 -e "s/__PROJECT_HOSTNAME__/$host/g"
                 -e "s/__WITH_ORCA__/$orca/g"
                 -e "s/__WITH_POSTGRES__/$postgres/g"
-                -e "s/__WITH_NARRATOR__/$narrator/g")
+                -e "s/__WITH_NARRATOR__/$narrator/g"
+                -e "s/__NARRATOR_MODEL__/$nmodel/g")
   if [ "$orca" = true ]; then
     render+=(-e "s/__ORCA_PORT__/$orca_port/g")
   else
@@ -542,6 +579,7 @@ cmd_setup() {
   if [ "$narrator" = true ]; then
     printf '  Narrator     : included%s; up starts it\n' "$narrator_note"
     printf '  Player port  : %s%s\n' "$narrator_port" "$narrator_port_note"
+    printf '  Voice model  : %s%s\n' "$nmodel" "$nmodel_note"
   else
     printf '  Narrator     : not included%s\n' "$narrator_note"
   fi
@@ -562,8 +600,8 @@ cmd_reconfigure() {
   for arg in "$@"; do
     case "$arg" in
       -*) ;;
-      # The value after a --*-port option is the one bare word allowed.
-      *) [ "$prev" = --orca-port ] || [ "$prev" = --narrator-port ] \
+      # The value after an option that takes one is the only bare word allowed.
+      *) [ "$prev" = --orca-port ] || [ "$prev" = --narrator-port ] || [ "$prev" = --narrator-model ] \
            || die "reconfigure keeps the project's name; to rename, run: ./dev setup <new-name> --force" ;;
     esac
     prev="$arg"

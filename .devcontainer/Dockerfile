@@ -412,21 +412,38 @@ RUN curl -fsSL https://claude.ai/install.sh | bash \
 # match the plugin's tag in init.lua; the two halves agree on a socket name
 # that upstream has changed since.
 #
-# Kokoro rather than Piper: noticeably more natural, at about 0.67 s of CPU per
-# second of speech with the int8 model on a Docker Desktop VM on Apple silicon
-# (measured), which the narrator hides by synthesising the next sentence while
-# the current one plays. int8 rather than the full model: 114 MB instead of
-# 326 MB, and the difference is hard to hear. The model is baked in, so
-# nothing is downloaded at run time. Note the release tag and the file names
-# disagree upstream: the v1.0 model files are published under
-# model-files-v1.1.
+# Kokoro rather than Piper: noticeably more natural, at a CPU cost the
+# narrator hides by synthesising the next sentence, and the next stop, while
+# the current one plays. The model is baked in, so nothing is downloaded at
+# run time. Note the release tag and the file names disagree upstream: the
+# v1.0 model files are published under model-files-v1.1.
+#
+# Which model is a build parameter, `./dev setup --narrator-model`, written
+# into the compose file's build args like WITH_NARRATOR. Measured on a Docker
+# Desktop VM on Apple silicon, in CPU seconds per second of speech, warm (the
+# first sentence after loading is slower, about 0.67 s for int8):
+#
+#   int8   114 MB   0.35 s   the default; synthesis stays well ahead
+#   full   326 MB   0.98 s   clearer, but barely faster than playback, so on
+#                            a busy machine expect pauses between sentences
+#
+# Upstream also publishes an fp16 model, deliberately not offered: on
+# onnxruntime's CPU provider it produces NaN samples -- silence -- for most
+# text ('Ready.' and every full sentence tried; only 'Warm up.' came out
+# right), with "Could not find a CPU kernel" warnings for its fp16 nodes. It
+# is meant for GPUs, which this container does not have.
 #
 # The smoke test synthesises a word, which proves onnxruntime and the bundled
 # espeak-ng both load on this architecture -- an import alone would not.
 #
-# Before PostgreSQL and Orca, so switching it re-runs those two cheap steps
-# and not the plugin bake. `narrator` is copied either way, so in an image
-# without it the command says how to add it.
+# Three steps, in order of how rarely they change, because a build arg or a
+# copied file invalidates every step after it: the cargo build and the venv
+# first (about a minute and a half), then the model behind its own ARG, so
+# switching models only downloads one, then the narrator's own code, so
+# editing it rebuilds nothing at all. Before PostgreSQL and Orca, so switching
+# the narrator on or off re-runs those two cheap steps and not the plugin
+# bake. `narrator` is copied either way, so in an image without it the command
+# says how to add it.
 # ---------------------------------------------------------------------------
 USER root
 ARG WITH_NARRATOR=false
@@ -434,11 +451,7 @@ ARG NVIM_MCP_VERSION=0.7.2
 ARG KOKORO_ONNX_VERSION=0.6.1
 ARG MCP_SDK_VERSION=2.3.0
 ARG PYNVIM_VERSION=0.6.0
-ARG KOKORO_MODEL_RELEASE=model-files-v1.1
-ARG KOKORO_MODEL_FILE=kokoro-v1.0.int8.onnx
-ARG KOKORO_VOICES_FILE=voices-v1.0.bin
 COPY --chmod=0755 config/bin/narrator /usr/local/bin/
-COPY config/narrator/ /opt/narrator/app/
 RUN set -eux; \
     if [ "${WITH_NARRATOR}" != true ]; then \
         echo "Narrator not included; ./dev reconfigure --with-narrator adds it"; \
@@ -451,14 +464,32 @@ RUN set -eux; \
     UV_NO_CACHE=1 uv pip install --python /opt/narrator/venv/bin/python \
         "kokoro-onnx==${KOKORO_ONNX_VERSION}" "mcp==${MCP_SDK_VERSION}" \
         "pynvim==${PYNVIM_VERSION}"; \
+    chmod -R a+rX /opt/narrator
+
+# int8 or full; anything else fails the build rather than quietly falling
+# back. A compose file rendered before the setting existed has no
+# NARRATOR_MODEL line, and this default applies.
+ARG NARRATOR_MODEL=int8
+ARG KOKORO_MODEL_RELEASE=model-files-v1.1
+ARG KOKORO_VOICES_FILE=voices-v1.0.bin
+RUN set -eux; \
+    if [ "${WITH_NARRATOR}" != true ]; then exit 0; fi; \
+    case "${NARRATOR_MODEL}" in \
+        int8) model=kokoro-v1.0.int8.onnx ;; \
+        full) model=kokoro-v1.0.onnx ;; \
+        *) echo "NARRATOR_MODEL must be int8 or full (got: ${NARRATOR_MODEL})" >&2; exit 1 ;; \
+    esac; \
     mkdir -p /opt/narrator/models; \
     base="https://github.com/thewh1teagle/kokoro-onnx/releases/download/${KOKORO_MODEL_RELEASE}"; \
-    curl -fsSL -o /opt/narrator/models/kokoro.onnx "${base}/${KOKORO_MODEL_FILE}"; \
+    curl -fsSL -o /opt/narrator/models/kokoro.onnx "${base}/${model}"; \
     curl -fsSL -o /opt/narrator/models/voices.bin "${base}/${KOKORO_VOICES_FILE}"; \
+    echo "${NARRATOR_MODEL}" > /opt/narrator/models/MODEL; \
     /opt/narrator/venv/bin/python -I -c "from kokoro_onnx import Kokoro; \
         s, r = Kokoro('/opt/narrator/models/kokoro.onnx', '/opt/narrator/models/voices.bin').create('Ready.', voice='af_heart'); \
         assert len(s) > r // 10, len(s); print('narrator smoke test:', round(len(s) / r, 2), 's')"; \
     chmod -R a+rX /opt/narrator
+
+COPY config/narrator/ /opt/narrator/app/
 USER ${USERNAME}
 
 # ---------------------------------------------------------------------------
