@@ -544,7 +544,10 @@ Code on the first shell:
 - **nvim-mcp** (`nvim`) lets Claude drive the Neovim you are in. A small
   plugin opens a socket in `/tmp` named after the project root, and
   `nvim-mcp --connect auto` finds it from the same root. The narrator uses
-  that same socket for the highlight, through pynvim. Claude needs nvim-mcp
+  that same socket for the highlight, through pynvim. It looks for it from the
+  tour's root upwards, since Claude may name a subdirectory, ignores sockets
+  that a crashed Neovim left behind, and looks again whenever the connection
+  fails, so a restarted Neovim picks the tour up. Claude needs nvim-mcp
   itself only for walkthroughs without the narrator, when it moves the
   highlight with `exec_lua` and writes the narration in chat.
 

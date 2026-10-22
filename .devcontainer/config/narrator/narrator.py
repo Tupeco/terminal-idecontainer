@@ -179,20 +179,28 @@ class NvimLink:
     RPC socket, so no second server has to be started in the editor.
     """
 
-    def __init__(self, path: str) -> None:
-        self.path = path
+    def __init__(self, root: str, path: str) -> None:
+        self.root = root
+        self.path: str | None = path
         self.pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="nvim")
         self.nvim: pynvim.Nvim | None = None
 
     def _call(self, code: str, args: tuple) -> Any:
-        if self.nvim is None:
-            self.nvim = pynvim.attach("socket", path=self.path)
+        if self.path is None:
+            self.path = NvimLink.find(self.root)
+            if self.path is None:
+                raise OSError("no Neovim for this project")
         try:
+            if self.nvim is None:
+                self.nvim = pynvim.attach("socket", path=self.path)
             return self.nvim.exec_lua(code, *args)
         except (OSError, EOFError):
-            # Neovim restarted or closed: drop the handle so the next call
-            # tries again rather than failing forever on a dead socket.
+            # Neovim restarted or closed: drop the handle, and the socket too,
+            # since a restarted Neovim opens one under its new pid. Otherwise
+            # every later stop failed with "Connection refused" on the dead
+            # socket even after the listener had opened Neovim again.
             self.nvim = None
+            self.path = None
             raise
 
     async def lua(self, code: str, *args: Any) -> Any:
@@ -202,24 +210,35 @@ class NvimLink:
     def find(project_root: str) -> str | None:
         """The newest live nvim-mcp socket for this project root.
 
-        The plugin names it /tmp/nvim-mcp.<root with / as %>.<pid>.sock (the
-        v0.7.2 scheme the nvim-mcp server globs for too). Failing a match for
-        the root -- Claude's working directory may be a subdirectory of the
-        repository Neovim was opened in -- a single socket on the machine is
-        taken as the one meant.
+        The plugin names it /tmp/nvim-mcp.<git root with / as %>.<pid>.sock
+        (the v0.7.2 scheme the nvim-mcp server globs for too). project_root
+        and its ancestors are tried nearest first: Claude has passed the
+        project's main package rather than its working directory, and the
+        socket is named after the repository. Failing that, a single live
+        socket on the machine is taken as the one meant. Only live ones count:
+        a Neovim that crashed leaves its socket behind, and that stale file
+        once made two candidates, so no highlight for the next session.
         """
-        root = os.path.realpath(project_root).rstrip("/")
-        mine = glob.glob(f"/tmp/nvim-mcp.{glob.escape(root.replace('/', '%'))}.*.sock")
-        candidates = mine or glob.glob("/tmp/nvim-mcp.*.sock")
-        if not mine and len(candidates) != 1:
-            return None
-        for path in sorted(candidates, key=os.path.getmtime, reverse=True):
-            try:
-                pynvim.attach("socket", path=path).close()
-                return path
-            except OSError:
-                continue
-        return None
+        def live(paths: list[str]) -> list[str]:
+            alive = []
+            for path in sorted(paths, key=os.path.getmtime, reverse=True):
+                try:
+                    pynvim.attach("socket", path=path).close()
+                    alive.append(path)
+                except OSError:
+                    continue
+            return alive
+
+        root = os.path.realpath(project_root).rstrip("/") or "/"
+        while True:
+            mine = live(glob.glob(f"/tmp/nvim-mcp.{glob.escape(root.replace('/', '%'))}.*.sock"))
+            if mine:
+                return mine[0]
+            if root == "/":
+                break
+            root = os.path.dirname(root)
+        others = live(glob.glob("/tmp/nvim-mcp.*.sock"))
+        return others[0] if len(others) == 1 else None
 
 
 class Tour:
@@ -387,7 +406,7 @@ class Narrator:
         self.pinned.clear()
         self.broadcast({"type": "flush"})
         path = await asyncio.to_thread(NvimLink.find, project_root)
-        self.tour = Tour(title, project_root, NvimLink(path) if path else None)
+        self.tour = Tour(title, project_root, NvimLink(project_root, path) if path else None)
         self.tasks = [asyncio.create_task(self.synth_worker(self.tour)), asyncio.create_task(self.drive(self.tour))]
         self.announce()
         notes = [f"Tour {title!r} started."]

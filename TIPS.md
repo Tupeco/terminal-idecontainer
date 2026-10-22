@@ -1094,7 +1094,8 @@ narrator, Claude moves the highlight and writes the explanation in its chat.
 
 The highlight reaches the Neovim whose working directory is in the same
 project as Claude's, so start `nvim` in the project. If the narrator says it
-found no Neovim, the tour still plays, just without the highlight.
+found no Neovim, the tour still plays, just without the highlight. If Neovim
+closes mid-tour, open it again in the project and the next stop finds it.
 
 While it talks:
 
