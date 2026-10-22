@@ -818,6 +818,14 @@ elevates for apt on its own.
   0.11.6, which does run this config, but 0.12.0 landed just after the LTS
   freeze. An LTS will not rebase, so apt would hold you a minor version behind
   for five years while the plugin stack moves to 0.12 APIs.
+- **Neovim 0.12.6 segfaults broadcasting to five or more RPC channels.**
+  `rpcnotify(0, ...)` gathers the channels in a vector that starts as a
+  4-slot array on the stack, then grows it with `realloc()` (`broadcast_event`
+  in `msgpack_rpc/channel.c`, unfixed on master as of 2026-10-22). During a
+  walkthrough nvim-mcp broadcasts on every diagnostics change, and the TUI,
+  nvim-mcp and the narrator hold channels, so Neovim vanished mid-tour with
+  exit 139. `init.lua` replaces `vim.rpcnotify` so a broadcast goes to one
+  channel at a time; remove that once a fixed release is out.
 - **26.04 replaces sudo with sudo-rs and coreutils with rust-coreutils**
   (`cp`, `mv` and `rm` are still GNU). This file's `ln -sf`, `chmod -R` and the
   `ls | head` in the lldb-dap probe now run through uutils implementations.

@@ -44,6 +44,38 @@ vim.g.clipboard = {
 }
 
 -- ---------------------------------------------------------------------------
+-- Work around a segfault in rpcnotify(0, ...) broadcasts
+-- ---------------------------------------------------------------------------
+-- Neovim 0.12.6 (and master as of 2026-10-22) collects the channels for a
+-- broadcast in a vector that starts in a 4-slot array on the stack, and grows
+-- it with kv_push instead of kvi_push: with a fifth RPC channel open, that is
+-- realloc() on a stack address, SIGSEGV (broadcast_event in
+-- msgpack_rpc/channel.c). A walkthrough gets there easily: the TUI, Claude's
+-- nvim-mcp, and the narrator's connection make three, and nvim-mcp, once
+-- connected, broadcasts on every DiagnosticChanged and LspAttach. Neovim
+-- vanished mid-tour, silently, exit 139; the core showed
+-- nlua_rpc -> rpc_send_event -> xrealloc -> realloc. Reproduced headless with
+-- five pynvim connections and `vim.rpcnotify(0, 'x')`.
+--
+-- Sending to one channel at a time never builds that vector. This covers
+-- Lua callers only (nvim-mcp is the only one here); Vimscript rpcnotify(0)
+-- still takes the broken path. Drop this once a fixed release is pinned.
+do
+  local rpcnotify = vim.rpcnotify
+  vim.rpcnotify = function(channel, method, ...)
+    if channel ~= 0 then
+      return rpcnotify(channel, method, ...)
+    end
+    for _, chan in ipairs(vim.api.nvim_list_chans()) do
+      if chan.mode == "rpc" then
+        -- A channel that is closing may refuse; the rest still get it.
+        pcall(rpcnotify, chan.id, method, ...)
+      end
+    end
+  end
+end
+
+-- ---------------------------------------------------------------------------
 -- Make messages visible
 --
 -- Nvim does report things like "No locations found" (runtime/lua/vim/lsp/buf.lua)
