@@ -66,6 +66,7 @@ import logging
 import os
 import re
 import secrets
+import socket
 import time
 import wave
 from collections import OrderedDict
@@ -199,12 +200,42 @@ class NvimLink:
             # since a restarted Neovim opens one under its new pid. Otherwise
             # every later stop failed with "Connection refused" on the dead
             # socket even after the listener had opened Neovim again.
-            self.nvim = None
+            self._close()
             self.path = None
             raise
 
     async def lua(self, code: str, *args: Any) -> Any:
         return await asyncio.get_running_loop().run_in_executor(self.pool, self._call, code, args)
+
+    def _close(self) -> None:
+        if self.nvim is None:
+            return
+        nvim, self.nvim = self.nvim, None
+        # pynvim 0.6.0's close() only schedules the transport's close on its
+        # private event loop, then closes that loop without running it again,
+        # so the socket stays open and Neovim keeps the channel. Shutting the
+        # socket down first makes Neovim see EOF and drop it. Measured: three
+        # tours left six RPC channels before this, none after.
+        try:
+            transport = nvim._session._async_session.loop._transport  # noqa: SLF001
+            transport.get_extra_info("socket").shutdown(socket.SHUT_RDWR)
+        except Exception:  # noqa: BLE001 -- already gone is as good as closed
+            pass
+        try:
+            nvim.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+    async def close(self) -> None:
+        """Hang up, so a finished tour's connection does not outlive it.
+
+        Every open connection is one more RPC channel in Neovim, and Neovim
+        0.12.6 segfaults broadcasting to five or more (see the rpcnotify
+        workaround in init.lua). Each tour_start used to leave the previous
+        tour's connection open, and the second tour of a session was enough.
+        """
+        await asyncio.get_running_loop().run_in_executor(self.pool, self._close)
+        self.pool.shutdown(wait=False)
 
     @staticmethod
     def find(project_root: str) -> str | None:
@@ -222,11 +253,15 @@ class NvimLink:
         def live(paths: list[str]) -> list[str]:
             alive = []
             for path in sorted(paths, key=os.path.getmtime, reverse=True):
-                try:
-                    pynvim.attach("socket", path=path).close()
-                    alive.append(path)
-                except OSError:
-                    continue
+                # A bare connect, not pynvim.attach: pynvim's close() leaves
+                # the socket open (see _close), so every probe used to stay
+                # behind in Neovim as an RPC channel.
+                with socket.socket(socket.AF_UNIX) as s:
+                    try:
+                        s.connect(path)
+                        alive.append(path)
+                    except OSError:
+                        continue
             return alive
 
         root = os.path.realpath(project_root).rstrip("/") or "/"
@@ -403,6 +438,7 @@ class Narrator:
         self.tasks = []
         if self.tour and self.tour.nvim:
             await self.highlight_clear(self.tour)
+            await self.tour.nvim.close()
         self.pinned.clear()
         self.broadcast({"type": "flush"})
         path = await asyncio.to_thread(NvimLink.find, project_root)
