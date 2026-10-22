@@ -147,7 +147,13 @@ function M.command(opts)
     vim.notify("Walkthrough: claude is not on PATH", vim.log.levels.ERROR)
     return
   end
-  local file = vim.fn.expand("%:.")
+  -- Only a real file counts. Run from neo-tree, `%` is "neo-tree filesystem
+  -- [1]", and Claude dutifully narrated neo-tree's filesystem source from the
+  -- plugin directory instead of the project.
+  local file = ""
+  if vim.bo.buftype == "" and vim.fn.filereadable(vim.fn.expand("%:p")) == 1 then
+    file = vim.fn.expand("%:.")
+  end
   local topic
   if opts.args ~= "" then
     topic = opts.args

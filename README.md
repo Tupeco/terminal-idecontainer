@@ -481,7 +481,8 @@ on the next start, but `pg stop` first is cleaner.
 `:Walkthrough` in Neovim starts Claude Code in a split and asks it for a
 spoken tour of the code. Claude moves a highlight through the code and
 explains each stop aloud, and it moves on only once you have heard the
-explanation. With no argument the tour covers the current file. You can also
+explanation. With no argument the tour covers the current file, or the whole
+project when the current window is not a file (neo-tree, say). You can also
 give it a topic (`:Walkthrough how setup picks ports`), or a visual selection
 (`:'<,'>Walkthrough`) for just those lines.
 
