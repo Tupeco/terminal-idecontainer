@@ -1102,7 +1102,7 @@ While it talks:
 - **Previous** / **Next** go back or forward a stop, highlight included.
   Previous after the end replays the last stop.
 - **Pause** holds the voice, and the tour waits with it, so you can read for
-  as long as you like.
+  as long as you like. Claude can see that you paused, and leaves you to it.
 - **Stop** holds the tour where it is, even between stops while Claude is
   still writing, and Claude asks what you would like. Ask a question in its
   pane; it can answer aloud while the tour stays held. **Continue** (or

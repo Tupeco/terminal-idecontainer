@@ -9,7 +9,9 @@
   The buttons go to /control; the server owns the tour (which stop is playing,
   stopped or not) and tells this page through "state" events, so two players
   open at once show the same thing. Pause is the exception: it only suspends
-  this page's audio, and the server simply waits for the clip to end.
+  this page's audio, and the server simply waits for the clip to end. The
+  page still reports it, so Claude can be told the listener is reading rather
+  than guess something is stuck when a wait runs long.
 
   Nothing connects until "Start listening" is pressed. Browsers refuse to play
   audio a page starts by itself, and a player that counted as listening while
@@ -216,6 +218,7 @@ function togglePause() {
   paused = !paused;
   if (paused) ctx.suspend(); else ctx.resume();
   $("pause").textContent = paused ? "Resume" : "Pause";
+  post("control", { action: paused ? "pause" : "resume" });
 }
 
 $("start").onclick = () => {

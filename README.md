@@ -509,7 +509,9 @@ is playing and each sentence as it is spoken. The controls:
 
 - **Previous** and **Next** move between stops, and the highlight in Neovim
   moves with them.
-- **Pause** holds the voice while you read the code.
+- **Pause** holds the voice while you read the code. Claude is not
+  interrupted, but `status` and a long `tour_wait` tell it you paused, so a
+  long pause does not look to it like a stuck tour.
 - **Stop** holds the whole tour, even if Claude is still writing later stops.
   Claude is told, and asks how you want to go on. **Continue**, which Stop
   becomes, carries on from the stop you stopped at.

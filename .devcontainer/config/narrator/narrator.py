@@ -97,7 +97,10 @@ CLIP_CACHE = 64
 
 # How long `speak` and `tour_wait` wait before giving up. Generous on purpose:
 # a listener may pause to read the code, and timing out under them would let
-# Claude race ahead. Disconnects and Stop end the wait sooner.
+# Claude race ahead. Disconnects and Stop end the wait sooner. A wait that runs
+# out while the listener has Pause pressed says so (see paused_note), because
+# a bare "still playing after 15 minutes" read to Claude as something gone
+# wrong, and it started asking the listener whether all was well.
 WAIT_CAP = 15 * 60
 
 # Text is synthesised a few sentences at a time, so the first one plays while
@@ -315,6 +318,10 @@ class Narrator:
         # their condition, so a change in between is never missed.
         self.wake = asyncio.Event()
         self.stopped_by_listener = False
+        # When a player pressed Pause, or None. Pause itself stays in the page
+        # (it suspends that page's audio, and the server just waits for the
+        # clip to end); the page reports it only so Claude can be told.
+        self.paused_since: float | None = None
         self.tour: Tour | None = None
         self.tasks: list[asyncio.Task] = []
         # One utterance at a time. Two interleaved would be unintelligible,
@@ -376,6 +383,16 @@ class Narrator:
             },
         }
 
+    def paused_note(self) -> str:
+        if self.paused_since is None:
+            return ""
+        minutes = (time.monotonic() - self.paused_since) / 60
+        ago = "just now" if minutes < 1 else f"{minutes:.0f} min ago"
+        return (
+            f"The listener pressed Pause {ago} and has not resumed: they are reading or "
+            "away, which is expected. Do not prompt them; playback carries on when they resume."
+        )
+
     def announce(self) -> None:
         self.broadcast(self.state_event())
         self.poke()
@@ -427,6 +444,8 @@ class Narrator:
                 return "The player disconnected before playback finished."
             left = deadline - time.monotonic()
             if left <= 0:
+                if self.paused_since is not None:
+                    return self.paused_note() + " Not spoken yet; it plays on resume."
                 return "Gave up waiting for playback after 15 minutes."
             await self.wait_any(wake, clip.done, timeout=left)
 
@@ -493,6 +512,8 @@ class Narrator:
             )
         if not self.players:
             parts.append(NO_PLAYER)
+        elif note := self.paused_note():
+            parts.append(note)
         return " ".join(parts)
 
     async def tour_wait(self) -> str:
@@ -522,6 +543,8 @@ class Narrator:
                 return NO_PLAYER + " The tour is paused until one connects."
             left = deadline - time.monotonic()
             if left <= 0:
+                if self.paused_since is not None:
+                    return f"At {t.where()}. {self.paused_note()} Call tour_wait again."
                 return f"Still playing after 15 minutes, at {t.where()}; call tour_wait again."
             await self.wait_any(wake, timeout=left)
 
@@ -614,6 +637,14 @@ class Narrator:
 
     def control(self, action: str) -> None:
         """A player button. Previous and Next jump within a tour; Stop holds it."""
+        if action in ("pause", "resume"):
+            # Recorded, not acted on: waking Claude for a pause would defeat it.
+            if action == "pause":
+                self.paused_since = self.paused_since or time.monotonic()
+            else:
+                self.paused_since = None
+            log.info("listener pressed %s", action.capitalize())
+            return
         t = self.tour
         # Previous still means something once a tour has finished: hear its
         # last stop again. Otherwise the buttons act on a plain `speak`.
@@ -757,11 +788,14 @@ def build_app(narrator: Narrator, token: str) -> ASGIApp:
 
     @mcp.tool()
     async def status() -> dict:
-        """Whether a player is listening, the tour's progress, and the voices available."""
+        """Whether a player is listening or paused, the tour's progress, and the voices available."""
         return {
             "players_connected": len(narrator.players),
             "player_url_hint": "run ./dev narrator-url on the host",
             "tour": narrator.state_event()["tour"],
+            # A paused tour is the listener reading, not something stuck.
+            "paused": narrator.paused_since is not None,
+            "paused_note": narrator.paused_note() or None,
             "model": narrator.model_name,
             "voice": narrator.voice,
             "speed": narrator.speed,
@@ -801,6 +835,9 @@ def build_app(narrator: Narrator, token: str) -> ASGIApp:
                         yield ": ping\n\n"
             finally:
                 narrator.players.discard(q)
+                if not narrator.players:
+                    # Nobody left to resume it; "no player" is the news now.
+                    narrator.paused_since = None
                 narrator.poke()
                 log.info("player disconnected (%d left)", len(narrator.players))
 
@@ -830,7 +867,7 @@ def build_app(narrator: Narrator, token: str) -> ASGIApp:
         if not authorised(request):
             return denied
         action = (await request.json()).get("action", "")
-        if action not in ("prev", "next", "stop", "continue"):
+        if action not in ("prev", "next", "stop", "continue", "pause", "resume"):
             return JSONResponse({"ok": False, "error": f"unknown action {action!r}"}, 400)
         narrator.control(action)
         return JSONResponse({"ok": True})
