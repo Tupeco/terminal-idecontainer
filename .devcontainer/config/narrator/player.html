@@ -4,14 +4,26 @@
   narrator-url` on the host prints the address. Clips are announced over
   /events, fetched as WAV, played in order through Web Audio, and each one is
   reported back to /ended when it finishes. That report is what moves a tour
-  on to its next stop, and what lets a plain `speak` call return.
+  on to its next stop, and what lets a plain `speak` call return. Each start
+  is reported too, to /started, which moves the subtitle in Neovim.
+
+  The output is never silent while listening. Speech arrived with its first
+  word or two missing after every gap: Bluetooth headphones, and some sound
+  cards and operating systems, power the output down after a moment of
+  digital silence and take a few hundred milliseconds to bring it back, and
+  Kokoro trims the silence from the ends of its clips, so the words start at
+  the very first sample. A loop of noise far below hearing (about -74 dBFS)
+  keeps the output awake between clips.
 
   The buttons go to /control; the server owns the tour (which stop is playing,
   stopped or not) and tells this page through "state" events, so two players
-  open at once show the same thing. Pause is the exception: it only suspends
+  open at once show the same thing. Pause is the exception: it only holds
   this page's audio, and the server simply waits for the clip to end. The
   page still reports it, so Claude can be told the listener is reading rather
-  than guess something is stuck when a wait runs long.
+  than guess something is stuck when a wait runs long. Pause stops the clip
+  and remembers where, and Resume starts it again a little earlier, rather
+  than suspending the AudioContext: a suspended context silences the output
+  too, and the first words after Resume were lost the same way.
 
   Nothing connects until "Start listening" is pressed. Browsers refuse to play
   audio a page starts by itself, and a player that counted as listening while
@@ -88,8 +100,10 @@ const $ = (id) => document.getElementById(id);
 
 let ctx = null;          // AudioContext, created inside the click that allows it
 let queue = [];          // {id, text, ready: Promise<AudioBuffer>}, in arrival order
-let current = null;      // {item, source}
+let current = null;      // {item, source, buffer, startedAt, offset}; source null while paused
 let paused = false;
+let resting = false;     // in the gap after a clip
+const REWIND = 0.4;      // seconds replayed on Resume, to pick the sentence up again
 let tour = null;         // the server's view: {title, state, index, total, complete, label}
 
 function setState(text, bad) {
@@ -136,18 +150,18 @@ function showTour(t) {
 
 // Fetch and decode as soon as a clip is announced, but play strictly in order:
 // the promise sits in the queue, so a later clip that decodes first still waits.
-function enqueue(id, text) {
+function enqueue(id, text, gap) {
   const ready = fetch(q(`clip/${id}.wav`))
     .then((r) => { if (!r.ok) throw new Error(r.status); return r.arrayBuffer(); })
     .then((b) => ctx.decodeAudioData(b));
-  queue.push({ id, text, ready, cancelled: false });
+  queue.push({ id, text, gap, ready, cancelled: false });
   pump();
 }
 
 async function pump() {
-  if (current || !queue.length) return;
+  if (current || resting || paused || !queue.length) return;
   const item = queue.shift();
-  current = { item, source: null };
+  current = { item, source: null, buffer: null, startedAt: 0, offset: 0 };
   $("now").textContent = item.text;
   let buffer;
   try {
@@ -159,21 +173,35 @@ async function pump() {
     return pump();
   }
   if (item.cancelled) { current = null; return pump(); }
+  current.buffer = buffer;
+  // Paused while it was decoding: Resume starts it.
+  if (!paused) play(0);
+}
+
+// Start (or restart, after Pause) the current clip `offset` seconds in.
+function play(offset) {
+  const { item, buffer } = current;
   const source = ctx.createBufferSource();
   source.buffer = buffer;
   source.connect(ctx.destination);
   source.onended = () => {
-    if (!item.cancelled) {
-      post("ended", { id: item.id });
-      remember(item.text);
-    }
-    $("now").textContent = "";
+    // Pause stops the source too, and has already set current.source aside.
+    if (!current || current.source !== source) return;
     current = null;
-    // A short breath between clips, which Kokoro trims from both ends.
-    setTimeout(pump, 200);
+    $("now").textContent = "";
+    if (item.cancelled) return pump();
+    post("ended", { id: item.id });
+    remember(item.text);
+    // A breath between clips, which Kokoro trims from both ends. The server
+    // sizes it: longer after a long sentence, longer again before a new stop.
+    resting = true;
+    setTimeout(() => { resting = false; pump(); }, (item.gap ?? 0.35) * 1000);
   };
   current.source = source;
-  source.start();
+  current.startedAt = ctx.currentTime;
+  current.offset = offset;
+  source.start(0, offset);
+  if (offset === 0) post("started", { id: item.id });
 }
 
 // Drop everything, the queue and whatever is playing, without reporting any
@@ -183,11 +211,24 @@ function flush() {
   queue = [];
   if (current) {
     current.item.cancelled = true;
-    if (current.source) current.source.stop();
+    // Its onended clears it; one held by Pause has no source to end.
+    if (current.source) current.source.stop(); else current = null;
   }
-  // A source stopped while the context is suspended does not fire onended
-  // until it runs again, and the next clip would sit there.
+  // Previous, Next and Stop all mean "go on from here", and a held Pause
+  // would leave the new stop sitting silent.
   if (paused) togglePause();
+}
+
+// Inaudible noise, looped for as long as the page listens; see the top.
+function keepAwake() {
+  const buffer = ctx.createBuffer(1, ctx.sampleRate * 2, ctx.sampleRate);
+  const data = buffer.getChannelData(0);
+  for (let i = 0; i < data.length; i++) data[i] = (Math.random() * 2 - 1) * 2e-4;
+  const source = ctx.createBufferSource();
+  source.buffer = buffer;
+  source.loop = true;
+  source.connect(ctx.destination);
+  source.start();
 }
 
 function connect() {
@@ -196,10 +237,10 @@ function connect() {
   es.onmessage = (m) => {
     const ev = JSON.parse(m.data);
     if (ev.type === "hello") setState(`listening · voice ${ev.voice}`);
-    else if (ev.type === "clip") enqueue(ev.id, ev.text);
+    else if (ev.type === "clip") enqueue(ev.id, ev.text, ev.gap);
     else if (ev.type === "flush") flush();
     // Next outside a tour: end the current clip early, counted as heard.
-    else if (ev.type === "skip") { if (current && current.source) current.source.stop(); }
+    else if (ev.type === "skip") skip();
     else if (ev.type === "state") showTour(ev.tour);
   };
   es.onerror = () => {
@@ -214,9 +255,32 @@ function connect() {
   };
 }
 
+function skip() {
+  if (!current) return;
+  if (current.source) { current.source.stop(); return; }
+  // Held by Pause: nothing is playing to end, so report it heard directly.
+  if (current.buffer) {
+    post("ended", { id: current.item.id });
+    current = null;
+    $("now").textContent = "";
+  }
+}
+
 function togglePause() {
   paused = !paused;
-  if (paused) ctx.suspend(); else ctx.resume();
+  if (paused) {
+    if (current && current.source) {
+      const at = current.offset + (ctx.currentTime - current.startedAt);
+      const source = current.source;
+      current.source = null;   // so its onended is not taken for the clip ending
+      current.offset = Math.max(0, at - REWIND);
+      source.stop();
+    }
+  } else if (current && current.buffer && !current.source) {
+    play(current.offset);
+  } else {
+    pump();
+  }
   $("pause").textContent = paused ? "Resume" : "Pause";
   post("control", { action: paused ? "pause" : "resume" });
 }
@@ -224,6 +288,7 @@ function togglePause() {
 $("start").onclick = () => {
   ctx = new (window.AudioContext || window.webkitAudioContext)();
   ctx.resume();
+  keepAwake();
   $("start").disabled = true;
   for (const b of ["prev", "pause", "next", "stop"]) $(b).disabled = false;
   connect();

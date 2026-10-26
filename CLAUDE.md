@@ -122,8 +122,11 @@ Several files are parsed by other files, so their format is a contract:
   player) into `/opt/narrator`. A walkthrough is a server-side tour
   (`tour_start`/`tour_add`/`tour_wait`): the narrator plays queued stops back
   to back and moves the highlight itself by calling `walkthrough.show()`
-  through pynvim on the nvim-mcp plugin's socket, so `show()`'s signature is a
-  contract between `narrator.py` and `walkthrough.lua`. The step is three
+  through pynvim on the nvim-mcp plugin's socket, so the signatures of
+  `show()`, `subtitle()` and `clear()` are a contract between `narrator.py`
+  and `walkthrough.lua`. The narrator saves every tour to `.tours/` in the
+  project (`TourFile`), and `tour_replay` reads that format back, including
+  hand-saved files that have only `commit`. The step is three
   layers, ordered by how rarely they change: cargo build and venv, then the
   model behind `ARG NARRATOR_MODEL` (`int8` default or `full`, from
   `setup --narrator-model`; fp16 is excluded because it yields NaN on CPU),

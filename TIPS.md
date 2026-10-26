@@ -119,9 +119,10 @@ somewhere new and silently leaves the original alone. See
 
 | | |
 |---|---|
-| `:Walkthrough` | Claude Code tours this file aloud, highlighting as it goes |
+| `:Walkthrough` | Claude Code tours this file aloud in a new tab, highlighting as it goes |
 | `:Walkthrough <topic>` / `:'<,'>Walkthrough` | The same, for a topic or the selected lines |
-| `:WalkthroughClear` | Remove the walkthrough highlight |
+| `:WalkthroughReplay [file]` | Replay a tour saved in `.tours/` (default: the newest) |
+| `:WalkthroughClear` | Remove the walkthrough highlight and subtitle |
 
 ## Working in a project
 
@@ -1083,14 +1084,24 @@ behaviours that lose.
 
 ## Narrated walkthroughs
 
-`:Walkthrough` opens Claude Code in a split on the right and gives it a
-prompt. Claude outlines a handful of stops, then writes them a few at a time.
-Each stop is highlighted in your code window (never in Claude's own terminal)
-while it is explained. With the narrator (a project set up `--with-narrator`;
-see README.md) the explanation is spoken in the player page, which you open
-from `./dev narrator-url` on the host. The narrator moves the highlight
-itself, so one stop follows the next without waiting for Claude. Without the
-narrator, Claude moves the highlight and writes the explanation in its chat.
+`:Walkthrough` opens a new tab laid out like `nvim .`, the tree on the left
+and a code window on the right, with Claude Code across the bottom, and gives
+Claude a prompt. Claude outlines a handful of stops, then writes them a few at
+a time. Each stop is highlighted in that code window (never in Claude's own
+terminal) while it is explained, and the tree moves to the file. With the
+narrator (a project set up `--with-narrator`; see README.md) the explanation
+is spoken in the player page, which you open from `./dev narrator-url` on the
+host, and each sentence appears as a subtitle along the bottom of the code
+window as it is spoken. The narrator moves the highlight itself, so one stop
+follows the next without waiting for Claude. Without the narrator, Claude
+moves the highlight and writes the explanation in its chat. `:tabclose` when
+you are done puts you back where you were.
+
+The narrator saves every tour to `.tours/` in the project as Claude writes
+it. `:WalkthroughReplay` (Tab completes the files) plays one again in the same
+layout. Claude only hands the file to the narrator, so it starts at once, and
+it is still there for questions when you press Stop. If a narrated file has
+changed since, Claude says which, as its highlights may have drifted.
 
 The highlight reaches the Neovim whose working directory is in the same
 project as Claude's, so start `nvim` in the project. If the narrator says it

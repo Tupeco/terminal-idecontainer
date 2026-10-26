@@ -12,6 +12,9 @@ Two ways to use it from Claude Code:
   `speak`: one utterance, which returns once a player reports it has finished
   playing. For answering a question after the listener has stopped a tour.
 
+Every tour is also saved, as it is written, to .tours/ in the project, and
+`tour_replay` plays a saved one again without Claude writing it afresh.
+
 Why a queue rather than Claude calling `speak` once per stop, as the first
 version did: every stop then cost a full turn of the agent between the end of
 one narration and the start of the next -- about 25 s of silence per stop,
@@ -39,6 +42,7 @@ One long-lived process serves both halves on one port (6769 in the container):
     /               the player page            } all of these need ?token=,
     /events         Server-Sent Events stream  } since the port is published
     /clip/<id>.wav  one synthesised clip       } on every interface of the host
+    /started        the player: a clip started playing (moves the subtitle)
     /ended          the player: a clip finished playing
     /control        the player's buttons: prev, next, stop, continue
 
@@ -59,6 +63,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import glob
+import hashlib
 import hmac
 import io
 import json
@@ -67,11 +72,14 @@ import os
 import re
 import secrets
 import socket
+import subprocess
+import threading
 import time
 import wave
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -113,6 +121,10 @@ MIN_CHUNK_CHARS = 60
 
 SENTENCE_END = re.compile(r"(?<=[.!?;:])\s+")
 
+# Where tours are saved, under the project's git root (or project_root outside
+# git). The name the user's first hand-saved tours used, so those replay too.
+TOURS_DIR = ".tours"
+
 NO_PLAYER = (
     "No player is listening. Ask the user to open the player page: on the host, "
     "`./dev narrator-url` prints its address."
@@ -133,6 +145,40 @@ def split_text(text: str) -> list[str]:
         else:
             chunks.append(buf)
     return chunks
+
+
+def gap_after(seconds: float, end_of_stop: bool) -> float:
+    """The silence the player leaves after a clip, in seconds.
+
+    It was a flat 0.2 s, which ran sentences together. Longer after a longer
+    clip, as a speaker breathes more after a long sentence than a short one:
+    about 0.5 s after five seconds of speech, at most 0.8 s. A stop's last clip
+    gets more again, since the highlight moves there and the eye needs a beat
+    to follow it.
+    """
+    gap = 0.35 + min(0.45, 0.03 * seconds)
+    return round(gap + (0.35 if end_of_stop else 0.0), 2)
+
+
+def git(root: str, *args: str) -> str | None:
+    """`git -C root ...`'s output, or None if it failed or there is no git."""
+    try:
+        r = subprocess.run(["git", "-C", root, *args], capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    # rstrip only: `status --porcelain` lines start with a meaningful space.
+    return r.stdout.rstrip() if r.returncode == 0 else None
+
+
+def file_digest(path: str) -> str | None:
+    try:
+        return hashlib.sha256(Path(path).read_bytes()).hexdigest()[:16]
+    except OSError:
+        return None
+
+
+def slugify(title: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:60].rstrip("-") or "tour"
 
 
 def to_wav(samples: np.ndarray, rate: int) -> bytes:
@@ -279,11 +325,142 @@ class NvimLink:
         return others[0] if len(others) == 1 else None
 
 
+class TourFile:
+    """A tour as saved under .tours/, so it can be replayed without Claude
+    writing it again (`tour_replay`).
+
+    Saved by the narrator rather than left to Claude, which saved them only
+    when asked and in whatever shape it chose that day. Rewritten whole after
+    every tour_add, so a tour the listener abandoned half way is still a valid
+    file with the stops written so far, and `complete` says whether Claude got
+    to the end.
+
+    The stops are kept exactly as Claude sent them, and their line numbers only
+    mean something against the code they were written for. A tour need not be
+    about a commit -- it may be about uncommitted work or a diff -- so that is
+    recorded several ways: `commit` and `branch` as they were when the tour
+    started, `dirty` (what `git status` listed then), `basis` (Claude's own
+    words, when it said the tour was about something else), and `files`, a
+    digest of every narrated file as it was when its first stop arrived. The
+    digests are what tour_replay checks, since they hold however the tour came
+    about; a hand-saved tour with only `commit` is checked with `git diff`.
+    """
+
+    def __init__(self, title: str, root: str, basis: str | None) -> None:
+        self.title = title
+        self.root = root
+        self.basis = basis
+        self.top = git(root, "rev-parse", "--show-toplevel")
+        self.dir = Path(self.top or root) / TOURS_DIR
+        self.commit = git(root, "rev-parse", "--short", "HEAD") if self.top else None
+        self.branch = git(root, "rev-parse", "--abbrev-ref", "HEAD") if self.commit else None
+        status = git(root, "status", "--porcelain") if self.top else None
+        self.dirty = [line[3:] for line in status.splitlines()] if status else []
+        self.created = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+        self.files: dict[str, str | None] = {}
+        self.path: Path | None = None
+        # tour_add saves from worker threads, and two in quick succession could
+        # finish out of order; the stop count tells a stale snapshot apart.
+        self.lock = threading.Lock()
+        self.written = -1
+
+    def _choose_path(self) -> Path:
+        self.dir.mkdir(parents=True, exist_ok=True)
+        self._exclude()
+        stem = f"{self.created[:10]}-{slugify(self.title)}"
+        for n in range(1, 1000):
+            path = self.dir / (f"{stem}.json" if n == 1 else f"{stem}-{n}.json")
+            try:
+                # Created exclusively, so a second tour of the same title the
+                # same day gets a name of its own instead of overwriting.
+                path.touch(exist_ok=False)
+                return path
+            except FileExistsError:
+                continue
+        raise OSError(f"no free file name for {stem} in {self.dir}")
+
+    def _exclude(self) -> None:
+        """Keep .tours/ out of `git status` and out of commits, unless the
+        project already says otherwise (ignores it, or tracks tours on purpose).
+
+        .git/info/exclude rather than .gitignore: it is local to this clone and
+        changes no file of the project's. Checked after the directory exists,
+        because git matches a pattern with a trailing slash only against a
+        directory that is there.
+        """
+        if not self.top or git(self.top, "check-ignore", "-q", TOURS_DIR + "/") is not None:
+            return
+        if git(self.top, "ls-files", TOURS_DIR):
+            return
+        exclude = git(self.top, "rev-parse", "--git-path", "info/exclude")
+        if not exclude:
+            return
+        path = Path(self.top) / exclude
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a") as f:
+            f.write(f"\n# saved narrated walkthroughs (narrator)\n/{TOURS_DIR}/\n")
+
+    def save(self, stops: list[StopSpec], complete: bool) -> Path:
+        with self.lock:
+            if len(stops) < self.written:
+                return self.path  # type: ignore[return-value]
+            for spec in stops:
+                if spec.file not in self.files:
+                    path = spec.file if os.path.isabs(spec.file) else os.path.join(self.root, spec.file)
+                    self.files[spec.file] = file_digest(path)
+            if self.path is None:
+                self.path = self._choose_path()
+            head: dict[str, Any] = {
+                "title": self.title,
+                "project_root": self.root,
+                "commit": self.commit,
+                "branch": self.branch,
+            }
+            if self.basis:
+                head["basis"] = self.basis
+            if self.dirty:
+                head["dirty"] = self.dirty
+            head |= {"created": self.created, "complete": complete, "files": self.files}
+            # One stop per line, like the tours first saved by hand: a diff of
+            # two versions of a tour, or a skim of one, reads stop by stop.
+            lines = ["{"]
+            lines += [f"  {json.dumps(k)}: {json.dumps(v, ensure_ascii=False)}," for k, v in head.items()]
+            lines.append('  "stops": [')
+            lines.append(",\n".join("    " + json.dumps(s.model_dump(), ensure_ascii=False) for s in stops))
+            lines += ["  ]", "}", ""]
+            tmp = self.path.with_suffix(".json.tmp")
+            tmp.write_text("\n".join(lines))
+            os.replace(tmp, self.path)
+            self.written = len(stops)
+            return self.path
+
+
+def tour_drift(data: dict, root: str) -> list[str] | None:
+    """Narrated files changed since a saved tour was written, or None if there
+    is no way to tell (a hand-saved tour whose commit git does not know)."""
+    files = data.get("files") or {}
+    if files:
+        return [
+            rel for rel, digest in files.items()
+            if file_digest(rel if os.path.isabs(rel) else os.path.join(root, rel)) != digest
+        ]
+    if data.get("commit"):
+        rels = sorted({s["file"] for s in data.get("stops", [])})
+        out = git(root, "diff", "--name-only", data["commit"], "--", *rels)
+        return None if out is None else out.splitlines()
+    return None
+
+
 class Tour:
     def __init__(self, title: str, root: str, nvim: NvimLink | None) -> None:
         self.title = title
         self.root = root
         self.nvim = nvim
+        # Where the tour is being saved; None for a replay, or if saving failed.
+        self.file: TourFile | None = None
+        # The clip whose text the subtitle shows, so two players reporting the
+        # same start do not redraw it twice.
+        self.subtitled: int | None = None
         self.stops: list[Stop] = []
         self.pos = 0
         # Claude has sent the last stop.
@@ -324,6 +501,7 @@ class Narrator:
         self.paused_since: float | None = None
         self.tour: Tour | None = None
         self.tasks: list[asyncio.Task] = []
+        self.background: set[asyncio.Task] = set()
         # One utterance at a time. Two interleaved would be unintelligible,
         # and the second caller's wait would end on the first one's audio.
         self.lock = asyncio.Lock()
@@ -425,7 +603,7 @@ class Narrator:
                 if self.stopped_by_listener:
                     break
                 last = clip
-                self.broadcast({"type": "clip", "id": last.id, "text": last.text})
+                self.broadcast(self.clip_event(clip, False))
             if last is None or (self.stopped_by_listener and not wait):
                 return "The listener pressed Stop before it was spoken. Ask them how to continue."
             if not wait:
@@ -451,7 +629,8 @@ class Narrator:
 
     # -- tours ---------------------------------------------------------------
 
-    async def tour_start(self, project_root: str, title: str) -> str:
+    async def open_tour(self, project_root: str, title: str) -> str | None:
+        """Replace any tour with an empty one; returns the Neovim socket found."""
         for task in self.tasks:
             task.cancel()
         self.tasks = []
@@ -464,19 +643,68 @@ class Narrator:
         self.tour = Tour(title, project_root, NvimLink(project_root, path) if path else None)
         self.tasks = [asyncio.create_task(self.synth_worker(self.tour)), asyncio.create_task(self.drive(self.tour))]
         self.announce()
-        notes = [f"Tour {title!r} started."]
-        notes.append(
+        return path
+
+    @staticmethod
+    def nvim_note(path: str | None) -> str:
+        return (
             f"Neovim found at {path}; each stop's lines are highlighted as it plays."
             if path
             else "No Neovim for this project was found, so the highlight will not move; "
             "the narration still plays. Ask the user to open nvim in the project if they want it."
         )
+
+    async def tour_start(self, project_root: str, title: str, basis: str | None) -> str:
+        path = await self.open_tour(project_root, title)
+        t = self.tour
+        notes = [f"Tour {title!r} started.", self.nvim_note(path)]
+        try:
+            t.file = await asyncio.to_thread(TourFile, title, project_root, basis)
+            notes.append(f"It is saved under {t.file.dir} as you add stops.")
+        except Exception as e:  # noqa: BLE001 -- an unsaved tour still plays
+            log.warning("cannot save tour %r: %s", title, e)
         if not self.players:
             notes.append(NO_PLAYER + " Stops will wait for it.")
         notes.append("Add the first stops now with tour_add, so playback can begin.")
         return " ".join(notes)
 
-    def tour_add(self, stops: list[StopSpec], last: bool) -> str:
+    async def tour_replay(self, path: str, project_root: str | None) -> str:
+        try:
+            data = json.loads(Path(path).read_text())
+            specs = [StopSpec(**s) for s in data["stops"]]
+        except (OSError, ValueError, KeyError, TypeError) as e:
+            return f"Cannot replay {path}: {e}"
+        if not specs:
+            return f"{path} has no stops."
+        # The project may have moved since (another container, another mount
+        # point). The tours directory sits in the project root, so its parent
+        # is the next best guess.
+        root = project_root or data.get("project_root") or ""
+        if not os.path.isdir(root):
+            root = str(Path(path).resolve().parent.parent)
+        title = data.get("title") or Path(path).stem
+        nvim = await self.open_tour(root, title)
+        t = self.tour
+        t.stops = [Stop(i, spec) for i, spec in enumerate(specs)]
+        t.complete = True
+        self.announce()
+        notes = [f"Replaying {title!r}, {len(specs)} stops, from {root}.", self.nvim_note(nvim)]
+        if data.get("complete") is False:
+            notes.append("It was saved before Claude finished writing it, so it may end abruptly.")
+        changed = await asyncio.to_thread(tour_drift, data, root)
+        if changed:
+            notes.append(
+                "These files have changed since the tour was saved, so their highlights may "
+                f"be off by a few lines: {', '.join(changed)}."
+            )
+        elif changed is None:
+            notes.append("There is no record of the code it was written for, so it cannot tell whether the files have changed.")
+        if not self.players:
+            notes.append(NO_PLAYER + " Playback waits for it.")
+        notes.append("Call tour_wait to follow it.")
+        return " ".join(notes)
+
+    async def tour_add(self, stops: list[StopSpec], last: bool) -> str:
         t = self.tour
         if t is None:
             return "No tour is open. Start one with tour_start."
@@ -489,7 +717,14 @@ class Narrator:
             t.stops.append(Stop(len(t.stops), spec))
         t.complete = last
         self.announce()
-        return self.tour_report(t)
+        report = self.tour_report(t)
+        if t.file:
+            try:
+                await asyncio.to_thread(t.file.save, [s.spec for s in t.stops], t.complete)
+            except Exception as e:  # noqa: BLE001
+                log.warning("saving tour %r failed: %s", t.title, e)
+                report += f" (Saving the tour to {t.file.dir} failed: {e}; playback is unaffected.)"
+        return report
 
     def tour_report(self, t: Tour) -> str:
         played = min(t.pos, len(t.stops))
@@ -583,6 +818,34 @@ class Narrator:
         except Exception as e:  # noqa: BLE001 -- a lost highlight must not stop the tour
             log.warning("highlight failed for stop %d: %s", stop.index + 1, e)
 
+    async def subtitle(self, t: Tour, text: str | None) -> None:
+        if t.nvim:
+            try:
+                await t.nvim.lua("return require('walkthrough').subtitle(...)", text)
+            except Exception as e:  # noqa: BLE001 -- subtitles are a nicety
+                log.warning("subtitle failed: %s", e)
+
+    def spawn(self, coro: Any) -> None:
+        """Fire and forget, keeping a reference so the task is not collected."""
+        task = asyncio.create_task(coro)
+        self.background.add(task)
+        task.add_done_callback(self.background.discard)
+
+    def clip_started(self, clip: Clip) -> None:
+        """A player started playing `clip`: show its text as the subtitle in
+        Neovim. Driven by the player rather than by sending the clip, since a
+        stop's clips are all sent at once and the player plays them in turn."""
+        t = self.tour
+        if t is None or t.nvim is None or t.subtitled == clip.id:
+            return
+        if not any(clip in s.clips for s in t.stops):
+            return
+        t.subtitled = clip.id
+        self.spawn(self.subtitle(t, clip.text))
+
+    def clip_event(self, clip: Clip, end_of_stop: bool) -> dict:
+        return {"type": "clip", "id": clip.id, "text": clip.text, "gap": gap_after(clip.seconds, end_of_stop)}
+
     async def highlight_clear(self, t: Tour) -> None:
         if t.nvim:
             try:
@@ -617,10 +880,11 @@ class Narrator:
                 continue
 
             await self.highlight(t, stop)
+            t.subtitled = None
             self.announce()
             for clip in stop.clips:
                 clip.done.clear()
-                self.broadcast({"type": "clip", "id": clip.id, "text": clip.text})
+                self.broadcast(self.clip_event(clip, clip is stop.clips[-1]))
             last = stop.clips[-1]
             # Until the last clip ends, or something else needs the driver.
             while True:
@@ -669,6 +933,10 @@ class Narrator:
         elif action == "stop" and t.state == "playing":
             t.state = "stopped"
             t.stop_unreported = True
+            # The highlight stays, as the place being asked about; the
+            # subtitle would be a sentence that is no longer being spoken.
+            t.subtitled = None
+            self.spawn(self.subtitle(t, None))
             log.info("listener pressed Stop at %s", t.where())
         elif action == "continue" and t.state == "stopped":
             t.state = "playing"
@@ -731,20 +999,25 @@ def build_app(narrator: Narrator, token: str) -> ASGIApp:
             "Speaks to the user through a browser player page, and plays narrated code "
             "walkthroughs. For a walkthrough use a tour: tour_start, then tour_add a few "
             "stops at a time as you write them (it returns at once and playback starts "
-            "straight away), last=true on the final batch, then tour_wait. Use speak only "
+            "straight away), last=true on the final batch, then tour_wait. Tours are saved "
+            "under .tours/ in the project; tour_replay plays a saved one. Use speak only "
             "for a single remark, such as answering a question after the listener stops."
         ),
     )
 
     @mcp.tool()
-    async def tour_start(project_root: str, title: str) -> str:
+    async def tour_start(project_root: str, title: str, basis: str | None = None) -> str:
         """Begin a narrated walkthrough, replacing any previous one.
 
         `project_root` is your working directory (absolute); stop paths are
         relative to it, and it is how the narrator finds the user's Neovim to
-        move the highlight. Follow with tour_add.
+        move the highlight. The tour is saved under .tours/ in the project as
+        stops are added, with the current commit recorded; `basis` says what
+        the line numbers refer to when that is not simply the checked-out
+        commit, e.g. "uncommitted changes to the parser" or "the diff from
+        main to feature-x". Follow with tour_add.
         """
-        return await narrator.tour_start(project_root, title)
+        return await narrator.tour_start(project_root, title, basis)
 
     @mcp.tool()
     async def tour_add(stops: list[StopSpec], last: bool = False) -> str:
@@ -756,7 +1029,18 @@ def build_app(narrator: Narrator, token: str) -> ASGIApp:
         spoken. Pass last=true with the final batch. The reply says where the
         listener is, and whether they pressed Stop.
         """
-        return narrator.tour_add(stops, last)
+        return await narrator.tour_add(stops, last)
+
+    @mcp.tool()
+    async def tour_replay(path: str, project_root: str | None = None) -> str:
+        """Play a tour saved earlier (a .tours/*.json file), replacing any tour.
+
+        `path` is absolute. `project_root` overrides the one in the file, for a
+        project that has moved; by default the file's, else the directory
+        above .tours/. The reply says whether the narrated files have changed
+        since. Follow with tour_wait, as for a tour you wrote.
+        """
+        return await narrator.tour_replay(path, project_root)
 
     @mcp.tool()
     async def tour_wait() -> str:
@@ -863,6 +1147,14 @@ def build_app(narrator: Narrator, token: str) -> ASGIApp:
             c.done.set()
         return JSONResponse({"ok": True})
 
+    async def started(request: Request) -> Response:
+        if not authorised(request):
+            return denied
+        c = narrator.clips.get(int((await request.json()).get("id", 0)))
+        if c is not None:
+            narrator.clip_started(c)
+        return JSONResponse({"ok": True})
+
     async def control(request: Request) -> Response:
         if not authorised(request):
             return denied
@@ -876,6 +1168,7 @@ def build_app(narrator: Narrator, token: str) -> ASGIApp:
         ("/", page, ["GET"]),
         ("/events", events, ["GET"]),
         ("/clip/{id:int}.wav", clip, ["GET"]),
+        ("/started", started, ["POST"]),
         ("/ended", ended, ["POST"]),
         ("/control", control, ["POST"]),
     ):

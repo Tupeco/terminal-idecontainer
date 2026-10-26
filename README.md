@@ -478,10 +478,11 @@ on the next start, but `pg stop` first is cleaner.
 
 ## Narrated walkthroughs
 
-`:Walkthrough` in Neovim starts Claude Code in a split and asks it for a
-spoken tour of the code. Claude moves a highlight through the code and
-explains each stop aloud, and it moves on only once you have heard the
-explanation. With no argument the tour covers the current file, or the whole
+`:Walkthrough` in Neovim opens a tab with the tree, a code window and Claude
+Code across the bottom, and asks Claude for a spoken tour of the code. Claude
+moves a highlight through the code and explains each stop aloud, with the
+tree following the file and the words as subtitles in Neovim, and it moves on
+only once you have heard the explanation. With no argument the tour covers the current file, or the whole
 project when the current window is not a file (neo-tree, say). You can also
 give it a topic (`:Walkthrough how setup picks ports`), or a visual selection
 (`:'<,'>Walkthrough`) for just those lines.
@@ -516,6 +517,28 @@ is playing and each sentence as it is spoken. The controls:
   Claude is told, and asks how you want to go on. **Continue**, which Stop
   becomes, carries on from the stop you stopped at.
 
+The page keeps a loop of noise far below hearing playing while it listens.
+Without it, the first word or two after every gap went missing: Bluetooth
+headphones and some sound cards power down after a moment of digital silence,
+and Kokoro's clips start speaking at the very first sample. Pause works by
+stopping the clip and starting it again 0.4 s earlier on Resume, for the same
+reason.
+
+### Saved tours
+
+The narrator writes every tour to `.tours/<date>-<title>.json` at the root of
+the project as the stops arrive, and adds `/.tours/` to `.git/info/exclude`
+unless git already ignores or tracks it. `:WalkthroughReplay [file]` plays one
+again (the narrator's `tour_replay`), without Claude writing anything.
+
+A tour's line numbers belong to the code it was written about, and that need
+not be a commit. The file records `commit` and `branch` at the start, `dirty`
+(what `git status` listed then), `basis` (Claude's note when the tour was
+about uncommitted work, a diff and so on), and `files`, a digest of each
+narrated file as it was. A replay compares the digests and says which files
+have changed since. Tours saved by hand with only `commit` are checked with
+`git diff` against it. `complete` is false for a tour Claude did not finish.
+
 ### How the sound gets out
 
 The container has no sound device, and there is no single way to give it one.
@@ -537,7 +560,9 @@ Code on the first shell:
   the whole plan. For each stop, the narrator calls
   `require('walkthrough').show(file, first, last, label)` in your Neovim,
   then sends the stop's audio (Kokoro, synthesised a stop ahead) to every
-  connected player. It moves on when a player reports the audio has finished.
+  connected player. As each sentence starts playing, the player says so and
+  the narrator calls `require('walkthrough').subtitle(text)`. It moves on
+  when a player reports the audio has finished.
   `show` highlights the lines in a code window, never in the terminal Claude
   is running in, and centres them. `tour_wait` returns to Claude when the
   tour ends or you press Stop. There is also a plain `speak` tool, for
