@@ -411,6 +411,24 @@ require("lazy").setup({
       { "<leader>gH", "<cmd>DiffviewFileHistory<cr>", desc = "History: whole repo" },
       { "<leader>gq", "<cmd>DiffviewClose<cr>", desc = "Close diffview" },
     },
+    -- `:Diff` as a short `:DiffviewOpen`, defined in `init` so it exists
+    -- before the plugin loads; running `DiffviewOpen` loads it through the
+    -- `cmd` stub above. Completion is diffview's own, which picks its
+    -- completer by the command name on the line, so the line is handed over
+    -- as if `DiffviewOpen` had been typed, cursor shifted to match.
+    init = function()
+      vim.api.nvim_create_user_command("Diff", function(opts)
+        vim.cmd("DiffviewOpen " .. opts.args)
+      end, {
+        nargs = "*",
+        desc = "Short for :DiffviewOpen",
+        complete = function(lead, line, pos)
+          local long, n = line:gsub("^(%s*)Diff", "%1DiffviewOpen", 1)
+          if n == 0 then return {} end
+          return require("diffview").completion(lead, long, pos + #"viewOpen")
+        end,
+      })
+    end,
     opts = {
       -- Better highlighting of what actually changed within a changed line.
       enhanced_diff_hl = true,

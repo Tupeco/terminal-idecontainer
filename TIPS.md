@@ -78,7 +78,7 @@ somewhere new and silently leaves the original alone. See
 
 | | |
 |---|---|
-| `:DiffviewOpen main..feature` | Whole-repo diff between two revisions |
+| `:Diff main..feature` | Whole-repo diff between two revisions (short for `:DiffviewOpen`) |
 | `<leader>gd` | Diff the working tree |
 | `<leader>gh` | History of the current file |
 | `]c` / `[c` | Next / previous change within the file |
@@ -505,6 +505,9 @@ down the left, side-by-side diff on the right.
 :DiffviewOpen HEAD~5               " the last five commits
 :DiffviewOpen -- src/ tests/       " limit to paths
 ```
+
+`:Diff` is short for `:DiffviewOpen` and takes the same arguments, with the
+same completion: `:Diff main..feature`.
 
 Leader mappings for the common entries:
 
