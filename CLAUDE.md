@@ -44,7 +44,9 @@ Host-side commands (run `./dev` with no arguments for the full list):
 ```
 
 `install-scripts/install.sh -l|-c` installs the same Neovim setup on a plain
-Ubuntu 22.04/24.04/26.04 machine without a container.
+Ubuntu 22.04/24.04/26.04 machine, or on macOS through Homebrew, without a
+container. The macOS path must stay runnable on macOS's bash 3.2 and BSD
+tools: no `getent`, no GNU-only flags such as `sed -i`.
 
 ## How the pieces depend on each other
 

@@ -1274,12 +1274,15 @@ client capabilities.
 
 On a machine set up with `install-scripts/install.sh`, the servers live in
 `~/.local/bin` (basedpyright, ruff) and `~/.cargo/bin` (rust-analyzer, cargo).
-The script adds both to `PATH` in `~/.profile` and `~/.bashrc`, so Neovim misses
-them when started from:
+The script adds both to `PATH` in `~/.profile` and `~/.bashrc`, and in
+`~/.zprofile` and `~/.zshrc` for zsh users, so Neovim misses them when started
+from:
 
-- a terminal opened before the install: run `. ~/.profile`, or open a new one
-- a shell that is not bash, e.g. zsh or fish, which read neither file: add both
-  directories to that shell's own startup file
+- a terminal opened before the install: open a new one, or run `. ~/.profile`
+  (`. ~/.zprofile` in zsh)
+- a shell the script does not set up: fish, or a zsh that was not your login
+  shell and had no `~/.zshrc` when the script ran. Add both directories to
+  that shell's own startup file
 - a desktop launcher, whose environment comes from the login session: log out
   and back in
 

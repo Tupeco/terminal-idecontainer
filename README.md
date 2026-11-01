@@ -39,8 +39,8 @@ template](#using-this-as-a-template).
     tmux.conf               OSC 52 passthrough, sane defaults
     bashrc.extra            PATH, history persistence, `work` helper
 install-scripts/
-  install.sh            the same Neovim setup on a plain Ubuntu machine,
-                        without the container; see below
+  install.sh            the same Neovim setup on a plain Ubuntu machine or
+                        a Mac, without the container; see below
 mount/                  bind-mounted at /mount inside; gitignored
 dev                     lifecycle wrapper script
 TIPS.md                 how to drive the tools once you are inside; also
@@ -791,7 +791,8 @@ Orca is beta software and phones home to PostHog for telemetry.
 For a dedicated machine or VM used as a remote IDE — SSH in, `tmux`, `nvim`,
 with Claude Code running on the box itself — `install-scripts/install.sh`
 installs the same Neovim setup directly, for the user who runs it. Ubuntu
-22.04, 24.04 and 26.04, amd64 or arm64.
+22.04, 24.04 and 26.04, amd64 or arm64, or macOS on Apple silicon or Intel,
+for Neovim on your own desktop.
 
 ```
 install-scripts/install.sh -l    # symlink the config to this checkout
@@ -808,7 +809,9 @@ config files are the ones in `.devcontainer/config`. What differs is where
 things go: apt for system packages (through sudo when not root), everything
 else under the user's home — Neovim in `~/.local/opt`, binaries in
 `~/.local/bin`, Rust through rustup in `~/.cargo`, Python tooling through
-uv, and a marked PATH block in `~/.profile` and `~/.bashrc`. Re-running
+uv, and a marked PATH block in `~/.profile` and `~/.bashrc`, plus
+`~/.zprofile` and `~/.zshrc` when zsh is your login shell or has either file
+already. Re-running
 updates in place, and anything it replaces in `~/.config/nvim` or
 `~/.tmux.conf` is kept as `<name>.bak-<timestamp>`.
 
@@ -820,15 +823,25 @@ Per-release differences it handles itself:
   debug adapter is still called `lldb-vscode` there; it is linked in as
   `lldb-dap`, the name `init.lua` uses.
 - **24.04, 26.04**: everything that apt has is taken from apt.
+- **macOS**: needs [Homebrew](https://brew.sh) and the Xcode Command Line
+  Tools (`xcode-select --install`) beforehand, and stops if either is
+  missing. Homebrew supplies what apt does on Ubuntu: ripgrep, fd, fzf,
+  git-delta, tmux, ncurses. Neovim and tree-sitter come from their macOS
+  release builds. The debug adapter is Xcode's `lldb-dap` (Xcode 16 or
+  later), reached through `xcrun`, or Homebrew's llvm if that is installed.
+  macOS's own ncurses does not know `tmux-256color`, which tmux.conf asks
+  for, so the script compiles that entry into `~/.terminfo`. Run it as
+  yourself: Homebrew refuses root. Neovim keeps the container's OSC 52
+  clipboard, which iTerm2 supports and Terminal.app does not.
 
 Running it with `sudo` from your own account installs for root, not for you
 — it says so when that happens. Run it as the account you will work as; it
 elevates for apt on its own.
 
 Neovim finds the language servers through its own `$PATH`, so start it from a
-shell that has the PATH block. A terminal opened before the install, zsh or
-fish (which read neither file), and a desktop launcher (until you next log in)
-all lack it. Neovim 0.12 then skips each server silently, and completion falls
+shell that has the PATH block. A terminal opened before the install, fish
+(which reads none of those files), and a desktop launcher (until you next log
+in) all lack it. Neovim 0.12 then skips each server silently, and completion falls
 back to words from the buffer. The status line flags such a server as
 `⚠ basedpyright not on PATH`, and `:LspStatus` names the directory it is in.
 See "Completion offers only words from the file" in TIPS.md.

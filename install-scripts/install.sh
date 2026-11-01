@@ -1,14 +1,21 @@
 #!/usr/bin/env bash
 # The Neovim setup from .devcontainer, installed on a real Ubuntu LTS machine
-# (22.04, 24.04, 26.04; amd64 or arm64) for the user who runs this.
+# (22.04, 24.04, 26.04; amd64 or arm64) or a Mac (Apple silicon or Intel) for
+# the user who runs this.
 #
 # Built for a dedicated box or VM used as a remote IDE: SSH in, attach tmux,
 # edit in Neovim, with Claude Code running on the same machine. The container
 # and this script share one config -- .devcontainer/config -- and the pinned
 # versions are read from the Dockerfile's ARG lines, so the two cannot drift.
 #
-# System packages come from apt (through sudo unless you are root); everything
-# else lands in the user's home. Safe to re-run: it updates in place.
+# System packages come from apt (through sudo unless you are root), or on
+# macOS from Homebrew; everything else lands in the user's home. Safe to
+# re-run: it updates in place.
+#
+# Meant to run on macOS's own bash 3.2 as well as on a newer one, so on that
+# path: no empty arrays under `set -u` (3.2 calls them unbound), and no
+# GNU-only tools or flags (getent, `sed -i`). `readlink -f` is fine: macOS has
+# had it since 12.3, and Homebrew wants a newer macOS than that anyway.
 
 set -euo pipefail
 
@@ -25,7 +32,7 @@ usage() {
 Usage: install-scripts/install.sh -c | -l
 
 Install the Neovim setup from this repo for the current user, on Ubuntu
-22.04, 24.04 or 26.04 (amd64 or arm64).
+22.04, 24.04 or 26.04 (amd64 or arm64), or on macOS with Homebrew.
 
   -c   copy the Neovim config and tmux.conf into place: a snapshot, so the
        repo can be deleted afterwards
@@ -42,10 +49,16 @@ Installs, for this user:
   fzf, delta                  ~/.local/bin, only where apt's are missing/old
   Neovim plugins + parsers    ~/.local/share/nvim
   config                      ~/.config/nvim and ~/.tmux.conf
-  PATH                        a marked block in ~/.profile and ~/.bashrc
+  PATH                        a marked block in ~/.profile and ~/.bashrc,
+                              and ~/.zprofile and ~/.zshrc if you use zsh
 
 and system-wide through apt: build tools, git, curl, ripgrep, fd-find,
 tmux, lldb, and fzf/git-delta where the release's versions are usable.
+
+On macOS, Homebrew instead of apt: ripgrep, fd, fzf, git-delta, tmux and
+ncurses. It needs Homebrew and the Xcode Command Line Tools already there
+(the compiler, git and lldb come from those), and adds the tmux-256color
+terminfo entry to ~/.terminfo, which macOS lacks.
 
 Anything this replaces in ~/.config/nvim or ~/.tmux.conf is kept alongside
 as <name>.bak-<timestamp>. Safe to re-run.
@@ -83,10 +96,30 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DC="$REPO/.devcontainer"
 [ -f "$DC/Dockerfile" ] || die "no $DC/Dockerfile: run this from a checkout of the repo"
 
+OS="$(uname -s)"
+case "$OS" in
+  Linux | Darwin) ;;
+  *) die "Ubuntu or macOS only (this is $OS)" ;;
+esac
+
+# The user's home from the account database. macOS keeps accounts in
+# Directory Services and has no getent; dscl prints `NFSHomeDirectory: /path`,
+# or the value on a second line, indented, when it contains a space.
+home_of() {
+  if [ "$OS" = Darwin ]; then
+    dscl . -read "/Users/$1" NFSHomeDirectory 2>/dev/null \
+      | sed -e '1s/^NFSHomeDirectory:[[:space:]]*//' -e 's/^[[:space:]]*//' | tr -d '\n'
+  else
+    getent passwd "$1" | cut -d: -f6
+  fi
+}
+
 # Install for the user running the script, with their home taken from the
-# password database rather than trusted from $HOME.
+# account database rather than trusted from $HOME.
 TARGET_USER="$(id -un)"
-HOME="$(getent passwd "$TARGET_USER" | cut -d: -f6)"
+# `|| true` so that a failed lookup reaches the message below, rather than
+# ending the script silently under `set -e`.
+HOME="$(home_of "$TARGET_USER" || true)"
 if [ -z "$HOME" ] || [ ! -d "$HOME" ]; then
   die "cannot find a home directory for $TARGET_USER"
 fi
@@ -123,6 +156,38 @@ PARSERS="$(sed -n "s/.*require('nvim-treesitter')\.install({ *\(.*[^ ]\) *}).*/\
 # Preflight
 # ---------------------------------------------------------------------------
 preflight() {
+  if [ "$OS" = Darwin ]; then preflight_macos; else preflight_ubuntu; fi
+  step "Installing for $TARGET_USER ($HOME) on $PLATFORM $ARCH, mode: $MODE"
+  note "neovim $NVIM_VERSION, tree-sitter $TREE_SITTER_VERSION, python $PYTHON_VERSION, rust $RUST_TOOLCHAIN"
+}
+
+preflight_macos() {
+  PLATFORM="macOS $(sw_vers -productVersion)"
+  # The OS part of the Neovim and tree-sitter release asset names.
+  RELEASE_OS=macos
+  # ARCH keeps Debian's names on both systems, so that every download step
+  # maps it the same way whatever the OS.
+  case "$(uname -m)" in
+    arm64) ARCH=arm64 ;;
+    x86_64) ARCH=amd64 ;;
+    *) die "Apple silicon or Intel only (this is $(uname -m))" ;;
+  esac
+  # A shell under Rosetta reports x86_64 on Apple silicon, and would get
+  # Intel builds of everything here: they work, translated, and slower.
+  if [ "$(sysctl -in sysctl.proc_translated 2>/dev/null)" = 1 ]; then
+    warn "this shell runs under Rosetta, so Intel builds will be installed." \
+      "Run it from a native arm64 shell for Apple silicon builds."
+  fi
+  # Homebrew refuses to run as root, and there is no sudo step to fall back on.
+  [ "$(id -u)" -ne 0 ] || die "run this as your own account, not root: Homebrew refuses root"
+  command -v brew >/dev/null || die "Homebrew is required (https://brew.sh), with brew on PATH"
+  # The C compiler for the treesitter parsers, git, and lldb-dap. Installing
+  # them is a GUI dialog, so ask for it rather than start it.
+  xcode-select -p >/dev/null 2>&1 \
+    || die "the Xcode Command Line Tools are required: run xcode-select --install, then this again"
+}
+
+preflight_ubuntu() {
   local id version
   # shellcheck source=/dev/null
   id="$(. /etc/os-release && printf '%s' "${ID:-}")"
@@ -137,7 +202,8 @@ preflight() {
       warn "Ubuntu $version has not been tried; tested releases are 22.04, 24.04 and 26.04"
       ;;
   esac
-  UBUNTU_VERSION="$version"
+  PLATFORM="Ubuntu $version"
+  RELEASE_OS=linux
 
   case "$(dpkg --print-architecture)" in
     amd64 | arm64) ARCH="$(dpkg --print-architecture)" ;;
@@ -158,9 +224,6 @@ preflight() {
     warn "running under sudo, so this installs for $TARGET_USER, not $SUDO_USER." \
       "To set up $SUDO_USER, run it as $SUDO_USER without sudo; it asks for sudo itself."
   fi
-
-  step "Installing for $TARGET_USER ($HOME) on Ubuntu $UBUNTU_VERSION $ARCH, mode: $MODE"
-  note "neovim $NVIM_VERSION, tree-sitter $TREE_SITTER_VERSION, python $PYTHON_VERSION, rust $RUST_TOOLCHAIN"
 }
 
 fetch() {
@@ -209,18 +272,58 @@ install_apt() {
     apt-get install -y --no-install-recommends "${pkgs[@]}"
 }
 
+# The apt list's counterparts. The Command Line Tools (checked in preflight)
+# cover build-essential, git and lldb, and macOS has curl, unzip and gzip, and
+# a tar that handles xz itself. Homebrew's fzf and git-delta are current, so
+# no version test. ncurses is for its terminfo: see setup_terminfo_macos.
+# `brew install` also upgrades anything already installed but outdated.
+install_brew() {
+  step "System packages (Homebrew)"
+  brew install ripgrep fd fzf git-delta tmux ncurses
+}
+
+# ---------------------------------------------------------------------------
+# tmux-256color on macOS
+#
+# tmux.conf sets default-terminal to tmux-256color, and macOS's own ncurses is
+# 5.7 from 2008, which does not know that entry: programs in a tmux pane then
+# complain ("WARNING: terminal is not fully functional" from less). On Ubuntu
+# it comes from ncurses-term. Here it is exported from Homebrew's ncurses and
+# compiled into ~/.terminfo with the *system* tic, which writes the database
+# layout the system ncurses reads. Homebrew's tic would write one it cannot.
+# ---------------------------------------------------------------------------
+setup_terminfo_macos() {
+  step "tmux-256color terminfo"
+  if /usr/bin/infocmp tmux-256color >/dev/null 2>&1; then
+    note "already known to the system ncurses"
+    return
+  fi
+  local brew_infocmp
+  brew_infocmp="$(brew --prefix ncurses)/bin/infocmp"
+  if [ -x "$brew_infocmp" ] \
+    && "$brew_infocmp" -x tmux-256color > "$TMP/tmux-256color.info" \
+    && /usr/bin/tic -x -o "$HOME/.terminfo" "$TMP/tmux-256color.info"; then
+    note "compiled into ~/.terminfo"
+  else
+    warn "could not add tmux-256color to ~/.terminfo; programs inside tmux may say the" \
+      "terminal is not fully functional"
+  fi
+}
+
 # ---------------------------------------------------------------------------
 # Neovim
 #
 # The release tarball, as in the container: every LTS here packages an older
 # minor version than the plugin stack targets. It needs glibc 2.34, which
-# 22.04 has.
+# 22.04 has. The macOS tarball has the same layout. Downloaded with curl it
+# carries no quarantine attribute, so Gatekeeper does not stop it, which it
+# would after a browser download.
 # ---------------------------------------------------------------------------
 install_nvim() {
   step "Neovim ($NVIM_VERSION)"
   local a
   case "$ARCH" in amd64) a=x86_64 ;; arm64) a=arm64 ;; esac
-  fetch "https://github.com/neovim/neovim/releases/download/$NVIM_VERSION/nvim-linux-$a.tar.gz" \
+  fetch "https://github.com/neovim/neovim/releases/download/$NVIM_VERSION/nvim-$RELEASE_OS-$a.tar.gz" \
     "$TMP/nvim.tar.gz"
   mkdir -p "$OPT" "$BIN"
   rm -rf "$OPT/nvim.new"
@@ -285,7 +388,7 @@ install_tree_sitter() {
 
   local a
   case "$ARCH" in amd64) a=x64 ;; arm64) a=arm64 ;; esac
-  fetch "https://github.com/tree-sitter/tree-sitter/releases/download/v$TREE_SITTER_VERSION/tree-sitter-linux-$a.gz" \
+  fetch "https://github.com/tree-sitter/tree-sitter/releases/download/v$TREE_SITTER_VERSION/tree-sitter-$RELEASE_OS-$a.gz" \
     "$TMP/tree-sitter.gz"
   gunzip -c "$TMP/tree-sitter.gz" > "$TMP/tree-sitter"
   chmod 0755 "$TMP/tree-sitter"
@@ -294,7 +397,7 @@ install_tree_sitter() {
     rm -f "$BIN/tree-sitter"
     mv "$TMP/tree-sitter" "$BIN/tree-sitter"
   else
-    note "the release binary does not run here (it needs glibc 2.39); building with cargo"
+    note "the release binary does not run here (on Ubuntu 22.04: it needs glibc 2.39); building with cargo"
     note "this takes a few minutes"
     cargo install --locked --no-default-features \
       --root "$OPT/tree-sitter" "tree-sitter-cli@$TREE_SITTER_VERSION"
@@ -308,6 +411,12 @@ install_tree_sitter() {
 # ---------------------------------------------------------------------------
 install_cli_tools() {
   step "fzf, delta, fd"
+
+  if [ "$OS" = Darwin ]; then
+    note "fd $(fd --version | awk '{ print $2 }'), fzf $(fzf --version | awk '{ print $1 }')," \
+      "delta $(delta --version | awk '{ print $2 }') (Homebrew)"
+    return
+  fi
 
   # Ubuntu ships fd as `fdfind`, clashing with an older package's name.
   ln -sfn "$(command -v fdfind)" "$BIN/fd"
@@ -387,6 +496,7 @@ install_python_tools() {
 # ---------------------------------------------------------------------------
 link_lldb_dap() {
   step "lldb-dap (Rust debugging)"
+  if [ "$OS" = Darwin ]; then link_lldb_dap_macos; return; fi
   local c dap=""
   for c in /usr/bin/lldb-dap /usr/bin/lldb-dap-* /usr/lib/llvm-*/bin/lldb-dap \
            /usr/bin/lldb-vscode /usr/bin/lldb-vscode-* /usr/lib/llvm-*/bin/lldb-vscode; do
@@ -400,6 +510,31 @@ link_lldb_dap() {
   fi
 }
 
+# Xcode 16 and later ship lldb-dap, which `xcrun` finds whether it comes from
+# the Command Line Tools or Xcode.app; Homebrew's llvm has one too. A wrapper
+# script rather than a link, so that it goes through `xcrun`: that follows
+# `xcode-select` and survives an Xcode update moving the binary, where a link
+# to today's path would break.
+link_lldb_dap_macos() {
+  local run=""
+  if xcrun -f lldb-dap >/dev/null 2>&1; then
+    run='exec xcrun lldb-dap "$@"'
+    note "lldb-dap -> $(xcrun -f lldb-dap), through xcrun"
+  elif [ -x "$(brew --prefix llvm)/bin/lldb-dap" ]; then
+    run="exec '$(brew --prefix llvm)/bin/lldb-dap' \"\$@\""
+    note "lldb-dap -> $(brew --prefix llvm)/bin/lldb-dap"
+  else
+    warn "no lldb-dap: it comes with Xcode 16 or later, or brew install llvm;" \
+      "Rust debugging will not work"
+    return
+  fi
+  # rm first: writing through a link left by an earlier run would overwrite
+  # whatever it points at.
+  rm -f "$BIN/lldb-dap"
+  printf '#!/bin/sh\n%s\n' "$run" > "$BIN/lldb-dap"
+  chmod 0755 "$BIN/lldb-dap"
+}
+
 # ---------------------------------------------------------------------------
 # PATH
 #
@@ -409,6 +544,13 @@ link_lldb_dap() {
 # ~/.bashrc covers interactive shells started some other way. The guards make
 # the two harmless together. Re-running replaces the block rather than adding
 # another.
+#
+# zsh reads none of those, and is the default shell on macOS. It gets the same
+# block in ~/.zprofile (login shells, which is what Terminal, iTerm2 and tmux
+# start) and ~/.zshrc. That is done when zsh is the login shell or already has
+# either file, so a bash user does not grow zsh dotfiles. On macOS
+# /etc/zprofile runs path_helper, which reorders PATH, before ~/.zprofile, so
+# the block there still comes out in front. fish is left to you.
 # ---------------------------------------------------------------------------
 BLOCK_BEGIN='# >>> idecontainer install-scripts >>>'
 BLOCK_END='# <<< idecontainer install-scripts <<<'
@@ -425,14 +567,18 @@ EOF
 }
 
 write_path_block() {
-  local f="$1"
+  local f="$1" new="$TMP/rc"
   touch "$f"
-  # --follow-symlinks: dotfiles are often links into a dotfiles repo, and a
-  # plain -i would replace the link with a regular file.
-  sed -i --follow-symlinks "\|^$BLOCK_BEGIN\$|,\|^$BLOCK_END\$|d" "$f"
+  # The file without any earlier block, by awk rather than `sed -i`, whose
+  # syntax differs between GNU and BSD sed. Written back with `cat >`, which
+  # writes through a symlink: dotfiles are often links into a dotfiles repo,
+  # and replacing the file would turn the link into a regular file.
+  awk -v b="$BLOCK_BEGIN" -v e="$BLOCK_END" \
+    '$0 == b { skip = 1 } !skip { print } $0 == e { skip = 0 }' "$f" > "$new"
   # One blank line before the block, not one more per re-run.
-  if [ -n "$(tail -n1 "$f")" ]; then printf '\n' >> "$f"; fi
-  printf '%s\n' "$(path_block)" >> "$f"
+  if [ -n "$(tail -n1 "$new")" ]; then printf '\n' >> "$new"; fi
+  path_block >> "$new"
+  cat "$new" > "$f"
   note "PATH block in $f"
 }
 
@@ -447,6 +593,11 @@ setup_shell() {
     if [ -f "$f" ]; then write_path_block "$f"; fi
   done
   write_path_block "$HOME/.bashrc"
+
+  if [ "$(basename "${SHELL:-}")" = zsh ] || [ -f "$HOME/.zprofile" ] || [ -f "$HOME/.zshrc" ]; then
+    write_path_block "$HOME/.zprofile"
+    write_path_block "$HOME/.zshrc"
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -514,7 +665,8 @@ install_plugins() {
 
   local want have
   want="$(printf '%s\n' "$PARSERS" | tr ',' '\n' | grep -c .)"
-  have="$(find "$NVIM_DATA/site/parser" -name '*.so' 2>/dev/null | wc -l)"
+  # tr: BSD wc pads the count with spaces.
+  have="$(find "$NVIM_DATA/site/parser" -name '*.so' 2>/dev/null | wc -l | tr -d '[:space:]')"
   if [ "$have" -ge "$want" ]; then
     note "$have parsers installed"
   else
@@ -532,7 +684,12 @@ summary() {
 
 main() {
   preflight
-  install_apt
+  if [ "$OS" = Darwin ]; then
+    install_brew
+    setup_terminfo_macos
+  else
+    install_apt
+  fi
   install_nvim
   install_rust
   install_tree_sitter
