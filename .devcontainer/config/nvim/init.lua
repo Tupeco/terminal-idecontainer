@@ -643,15 +643,19 @@ require("lazy").setup({
       require("lualine").setup({
         options = { theme = "tokyonight" },
         sections = {
-          -- lualine's default x section, preceded by three LSP components. Its own
-          -- `lsp_status` names the servers attached to this buffer, with a
-          -- spinner while they work. It never mentions one that should be
-          -- there and is not, so `unattached` does that, in the warning
-          -- colour ("⚠ basedpyright not on PATH"). `python_env` shows which
-          -- environment basedpyright resolves imports in. See lua/lspstatus.lua.
+          -- lualine's default x section, preceded by three LSP components.
+          -- `servers` names the servers attached to this buffer, with a
+          -- spinner while they work. It replaces lualine's own `lsp_status`,
+          -- whose spinner never turns for basedpyright: that server's
+          -- progress reports arrive only after the check is done. Neither
+          -- mentions a server that should be there and is not, so
+          -- `unattached` does that, in the warning colour ("⚠ basedpyright
+          -- not on PATH"). `python_env` shows which environment basedpyright
+          -- resolves imports in. See lua/lspstatus.lua.
           lualine_x = {
             { lsp.unattached, color = lsp.unattached_color },
-            "lsp_status",
+            -- U+F013, the gear `lsp_status` shows, from the Nerd Font.
+            { lsp.servers, icon = "\u{f013}" },
             lsp.python_env,
             "encoding", "fileformat", "filetype",
           },

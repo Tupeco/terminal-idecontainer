@@ -1251,12 +1251,14 @@ and paths, appears only when the first, the LSP and snippets, returns nothing.
 So the menu does not fail. It falls back, and the fallback looks like a
 completion that just works badly.
 
-The status line says which. On the right, lualine's own component names the
-servers that *are* attached. Next to it, in the warning colour, is any server
-that should be there and is not:
+The status line says which. On the right it names the servers that *are*
+attached. Next to them, in the warning colour, is any server that should be
+there and is not:
 
 | Status line | Meaning |
 |---|---|
+| `basedpyright ⠹` | Attached and busy: checking the file, or making you wait for an answer |
+| `basedpyright ✓` | Attached and idle |
 | `basedpyright starting` | Started, has not answered yet; give it a second |
 | `⚠ basedpyright not on PATH` | Nvim skipped it: the binary is not on *Neovim's* `$PATH` |
 | `⚠ rust_analyzer not running` | Binary present, no client: exited, or never found its root |

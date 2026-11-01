@@ -1,5 +1,6 @@
--- Which language servers are serving the current buffer, and why one that
--- should be is not: two lualine components and `:LspStatus`.
+-- Which language servers are serving the current buffer, whether they are busy
+-- with it, and why one that should be is not: lualine components and
+-- `:LspStatus`.
 --
 -- Written for one specific silence. Nvim 0.12's vim.lsp.enable() checks each
 -- server's `cmd` when a buffer gets its filetype, and when the binary is not
@@ -90,11 +91,163 @@ local function env_label(py)
 end
 
 -- ---------------------------------------------------------------------------
+-- Activity: is a server working on something for us right now?
+-- ---------------------------------------------------------------------------
+-- lualine's own `lsp_status` spins only between `$/progress` begin and end,
+-- and basedpyright's progress never covers the wait. Measured with
+-- basedpyright 1.40.2 on Nvim 0.12, opening a file that takes ~0.8 s to
+-- check: begin, "1 file to analyze" and end all arrive within the same
+-- millisecond, *after* the diagnostics. The server sends begin only once its
+-- `window/workDoneProgress/create` round trip has returned, and by then the
+-- check is over, so the spinner never got a frame and the status line said
+-- "basedpyright ✓" throughout. (The progress is for the backlog of files
+-- still to check, and with diagnosticMode = "openFilesOnly" there is never
+-- much of one.)
+--
+-- What does cover the wait: basedpyright uses pull diagnostics with Nvim
+-- 0.12, so for as long as a buffer is being checked a `textDocument/
+-- diagnostic` request for it is outstanding, and so are the inlay-hint and
+-- semantic-token requests sent with it. A hover or completion that is stuck
+-- behind the check is outstanding too. So a server counts as busy while it
+-- has `$/progress` open (rust-analyzer's indexing, which it reports
+-- properly), or while one of our textDocument/* requests has waited longer
+-- than BUSY_AFTER_NS. The delay keeps the spinner from flickering on every
+-- keystroke: ruff answers in ~10 ms, and an unblocked basedpyright hover in
+-- ~30 ms. Only textDocument/* counts, because `workspace/diagnostic` may
+-- legitimately be held open by a server as a long poll.
+--
+-- Request start times come from the LspRequest autocmd, since
+-- client.requests has no timestamps. client.requests stays the authority on
+-- what is still pending, so an entry missed on the way out (a client that
+-- crashed) is dropped the next time it is looked at.
+
+local SPINNER = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" }
+local BUSY_AFTER_NS = 200 * 1e6
+local TICK_MS = 100
+
+--- [client id][request id] = hrtime the request was sent
+local sent_at = {}
+--- [client id][progress token] = true from `begin` to `end`
+local progress = {}
+
+local function client_busy(client, now)
+  if next(progress[client.id] or {}) then return true end
+  local busy = false
+  for id, t in pairs(sent_at[client.id] or {}) do
+    local req = client.requests[id]
+    if not req or req.type ~= "pending" then
+      sent_at[client.id][id] = nil
+    elseif now - t >= BUSY_AFTER_NS then
+      busy = true
+    end
+  end
+  return busy
+end
+
+-- lualine redraws on its own once a second and on cursor movement, which is
+-- too seldom both for the spinner and for the moment BUSY_AFTER_NS passes,
+-- since no event marks that moment. So a timer runs while any request or
+-- progress is open, and asks lualine to redraw while a spinner is showing
+-- and once more when the last one stops. With nothing open it stops itself.
+local timer = assert(vim.uv.new_timer())
+local ticking, spinner_shown = false, false
+
+local function tick()
+  local now = vim.uv.hrtime()
+  local busy, open = false, false
+  for _, client in ipairs(vim.lsp.get_clients()) do
+    busy = client_busy(client, now) or busy
+    open = open or next(sent_at[client.id] or {}) ~= nil or next(progress[client.id] or {}) ~= nil
+  end
+  if busy or spinner_shown then
+    local ok, lualine = pcall(require, "lualine")
+    if ok then lualine.refresh({ place = { "statusline" } }) end
+  end
+  spinner_shown = busy
+  if not open and not busy then
+    timer:stop()
+    ticking = false
+  end
+end
+
+local function start_ticking()
+  if ticking then return end
+  ticking = true
+  timer:start(TICK_MS, TICK_MS, vim.schedule_wrap(tick))
+end
+
+local function track_activity()
+  local group = vim.api.nvim_create_augroup("lspstatus_activity", {})
+  vim.api.nvim_create_autocmd("LspRequest", {
+    group = group,
+    callback = function(ev)
+      local d = ev.data
+      if d.request.type == "pending" then
+        if d.request.method:find("^textDocument/") then
+          sent_at[d.client_id] = sent_at[d.client_id] or {}
+          sent_at[d.client_id][d.request_id] = vim.uv.hrtime()
+          start_ticking()
+        end
+      elseif sent_at[d.client_id] then
+        -- complete, or cancel: Nvim cancels a superseded diagnostic request
+        -- and sends a new one at once, and that one carries on the wait.
+        sent_at[d.client_id][d.request_id] = nil
+      end
+    end,
+  })
+  vim.api.nvim_create_autocmd("LspProgress", {
+    group = group,
+    callback = function(ev)
+      local id, params = ev.data.client_id, ev.data.params
+      local kind = type(params.value) == "table" and params.value.kind
+      if kind == "begin" then
+        progress[id] = progress[id] or {}
+        progress[id][params.token] = true
+        start_ticking()
+      elseif kind == "end" and progress[id] then
+        progress[id][params.token] = nil
+      end
+    end,
+  })
+  vim.api.nvim_create_autocmd("LspDetach", {
+    group = group,
+    callback = function(ev)
+      -- Only once the client is gone altogether, not when it merely leaves
+      -- one of several buffers.
+      local client = vim.lsp.get_client_by_id(ev.data.client_id)
+      if not client or client:is_stopped() then
+        sent_at[ev.data.client_id], progress[ev.data.client_id] = nil, nil
+      end
+    end,
+  })
+end
+
+-- ---------------------------------------------------------------------------
 -- lualine components
 -- ---------------------------------------------------------------------------
--- Next to lualine's own `lsp_status`, which names the servers that are
--- attached and spins while they work (rust-analyzer indexing, say). It never
--- mentions the ones that are not, which is what these are for.
+
+--- The servers attached to this buffer, each with a spinner while it is busy
+--- (see Activity above) and ✓ when it is not: "basedpyright ⠹ ruff ✓". In
+--- place of lualine's `lsp_status`, which looks the same but whose spinner
+--- basedpyright never sets off.
+function M.servers()
+  local now = vim.uv.hrtime()
+  local frame = SPINNER[math.floor(now / (TICK_MS * 1e6)) % #SPINNER + 1]
+  local names, busy = {}, {}
+  for _, client in ipairs(vim.lsp.get_clients({ bufnr = vim.api.nvim_get_current_buf() })) do
+    if busy[client.name] == nil then names[#names + 1] = client.name end
+    -- Two clients of one name (two roots) share an entry, busy if either is.
+    busy[client.name] = busy[client.name] or client_busy(client, now)
+  end
+  local parts = {}
+  for _, name in ipairs(names) do
+    parts[#parts + 1] = name .. " " .. (busy[name] and frame or "✓")
+  end
+  return table.concat(parts, " ")
+end
+-- `servers` names the servers that are attached and spins while they work.
+-- The other two cover the ones that are not attached, and which Python
+-- environment basedpyright uses.
 
 --- Servers that should be serving this buffer and are not, e.g.
 --- "⚠ basedpyright not on PATH". Empty, so hidden, when all is well.
@@ -210,6 +363,7 @@ end
 
 function M.setup(names)
   servers = names
+  track_activity()
   vim.api.nvim_create_user_command("LspStatus", M.report,
     { desc = "Which language servers serve this buffer, and why one is missing" })
 end
