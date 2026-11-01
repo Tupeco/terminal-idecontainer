@@ -882,6 +882,17 @@ See "Completion offers only words from the file" in TIPS.md.
   nvim-mcp and the narrator hold channels, so Neovim vanished mid-tour with
   exit 139. `init.lua` replaces `vim.rpcnotify` so a broadcast goes to one
   channel at a time; remove that once a fixed release is out.
+- **Neovim 0.12's matchparen pairs brackets inside a string with ones outside
+  it.** With treesitter highlighting, the built-in plugin skips every bracket
+  captured as `string` or `comment` and, unlike the legacy-syntax path, has no
+  exception for a cursor that starts inside one (`plugin/matchparen.vim`, the
+  `b:ts_highlight` branch). In `re.sub(r"(\w)-\n(\w)", ...)` the cursor on
+  any inner parenthesis highlights `sub`'s own instead, in normal and insert
+  mode alike. Patching the runtime copy at startup worked in a headless test
+  but was turned down in favour of waiting for upstream:
+  [neovim#42478](https://github.com/neovim/neovim/pull/42478), unmerged and
+  without a milestone as of 2026-11-01. 0.13 is due 2026-11-11. Since
+  `NVIM_VERSION` is `stable`, a rebuild after the fix ships picks it up.
 - **26.04 replaces sudo with sudo-rs and coreutils with rust-coreutils**
   (`cp`, `mv` and `rm` are still GNU). This file's `ln -sf`, `chmod -R` and the
   `ls | head` in the lldb-dap probe now run through uutils implementations.
