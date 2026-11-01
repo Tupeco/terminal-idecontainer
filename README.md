@@ -834,6 +834,14 @@ Per-release differences it handles itself:
   yourself: Homebrew refuses root. Neovim keeps the container's OSC 52
   clipboard, which iTerm2 supports and Terminal.app does not.
 
+Its last step checks what a new terminal will find. It starts a login shell of
+your own `$SHELL` from a clean environment and lists every match on that
+shell's `PATH`, like `which -a`, for nvim, basedpyright-langserver, ruff,
+rustup, rustc, cargo and rust-analyzer. It warns about anything missing, with
+how to install or reach it, and about a `rustc`, `cargo` or `rust-analyzer`
+that is not rustup's, such as Homebrew's `rust` formula taking precedence. It
+also shows any errors your startup files print.
+
 Running it with `sudo` from your own account installs for root, not for you
 — it says so when that happens. Run it as the account you will work as; it
 elevates for apt on its own.

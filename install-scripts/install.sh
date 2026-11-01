@@ -674,9 +674,122 @@ install_plugins() {
   fi
 }
 
+# ---------------------------------------------------------------------------
+# What a new terminal will find
+#
+# Neovim finds its language servers on its own PATH, and Nvim 0.12 skips a
+# server it cannot find without saying so: completion just falls back to words
+# from the buffer. So, last, list every match of each tool the editor needs, as
+# `which -a` would, on the PATH a new terminal will have. That is not this
+# script's PATH, which has ~/.local/bin and ~/.cargo/bin added at the top and
+# would hide exactly the problem being checked for. Instead a login shell of
+# the user's own $SHELL is started from a bare environment and asked for its
+# PATH. Anything that shell prints on stderr is shown too: a broken line in a
+# startup file, such as a `. "$HOME/.cargo/env"` left behind by an earlier
+# rustup whose ~/.cargo has gone, greets every new terminal the same way.
+#
+# Rust gets one more check. rustc, cargo and rust-analyzer should be rustup's
+# proxies, from the directory of the first rustup. With Homebrew's `rust`
+# formula installed, /opt/homebrew/bin/rustc can come first instead. Then
+# rust-analyzer (rustup's) and cargo (Homebrew's) are two different Rusts.
+# ---------------------------------------------------------------------------
+CHECK_TOOLS="nvim basedpyright-langserver ruff rustup rustc cargo rust-analyzer"
+
+# The PATH of a new login shell, or nothing if it could not be read. The marker
+# line keeps it apart from anything the startup files print on stdout.
+login_path() {
+  local sh="${SHELL:-/bin/sh}"
+  env -i HOME="$HOME" USER="$TARGET_USER" LOGNAME="$TARGET_USER" SHELL="$sh" \
+    TERM="${TERM:-dumb}" PATH=/usr/bin:/bin:/usr/sbin:/sbin \
+    "$sh" -lc 'printf "\n__PATH__=%s\n" "$PATH"' </dev/null 2>"$TMP/login.err" \
+    | sed -n 's/^__PATH__=//p' | tail -n1
+}
+
+# which_all TOOL PATH: every executable TOOL along PATH, in order, once each.
+which_all() {
+  local IFS=: d seen=":"
+  for d in $2; do
+    if [ -n "$d" ] && [ -x "$d/$1" ] && [ ! -d "$d/$1" ]; then
+      case "$seen" in *":$d:"*) continue ;; esac
+      seen="$seen$d:"
+      printf '%s\n' "$d/$1"
+    fi
+  done
+  return 0
+}
+
+# What to do about a tool a new terminal will not find.
+missing_hint() {
+  local here
+  here="$(command -v "$1" || true)"
+  if [ -n "$here" ]; then
+    printf '%s' "It is installed, at $here, but a new terminal's PATH lacks $(dirname "$here"): add that to your shell's startup file."
+    return
+  fi
+  case "$1" in
+    nvim) printf '%s' "Re-run this script." ;;
+    basedpyright-langserver) printf '%s' "Install it: uv tool install basedpyright" ;;
+    ruff) printf '%s' "Install it: uv tool install ruff" ;;
+    rustup) printf '%s' "Re-run this script: with no rustup on PATH it installs the official one into ~/.cargo." ;;
+    rust-analyzer) printf '%s' "Install it: rustup component add rust-analyzer" ;;
+    *) printf '%s' "Install a toolchain: rustup default $RUST_TOOLCHAIN" ;;
+  esac
+}
+
+check_tools() {
+  step "What a new terminal will find"
+  local lpath sh_name
+  sh_name="$(basename "${SHELL:-sh}")"
+  lpath="$(login_path || true)"
+  if [ -s "$TMP/login.err" ]; then
+    warn "starting a new login $sh_name printed errors, which every new terminal will show too:"
+    sed 's/^/      /' "$TMP/login.err" >&2
+  fi
+  if [ -z "$lpath" ]; then
+    warn "could not read the PATH of a new login $sh_name; checking this script's PATH instead"
+    lpath="$PATH"
+  else
+    note "on the PATH of a new login $sh_name:"
+  fi
+
+  local t hits first rustup_dir="" problems=0
+  for t in $CHECK_TOOLS; do
+    hits="$(which_all "$t" "$lpath")"
+    if [ -z "$hits" ]; then
+      printf '    %-24s %s\n' "$t" "(not found)"
+      warn "$t: not found. $(missing_hint "$t")"
+      problems=1
+      continue
+    fi
+    # Like `which -a`: the first is the one that runs.
+    printf '%s\n' "$hits" | awk -v t="$t" \
+      'NR == 1 { printf "    %-24s %s\n", t, $0; next } { printf "    %-24s %s  (not used)\n", "", $0 }'
+    first="$(printf '%s\n' "$hits" | head -n1)"
+    case "$t" in
+      rustup) rustup_dir="$(dirname "$first")" ;;
+      rustc | cargo | rust-analyzer)
+        if [ -n "$rustup_dir" ] && [ "$(dirname "$first")" != "$rustup_dir" ]; then
+          warn "$t: $first comes before rustup's, so it is not rustup's toolchain that runs." \
+            "Put $rustup_dir earlier on PATH, or remove the other Rust (brew uninstall rust)."
+          problems=1
+        fi
+        ;;
+    esac
+    # rustup installs the rust-analyzer proxy even without the component,
+    # and the proxy then fails with "Unknown binary 'rust-analyzer'".
+    if [ "$t" = rust-analyzer ] && ! env PATH="$lpath" "$first" --version >/dev/null 2>&1; then
+      warn "rust-analyzer: $first does not run. Install it: rustup component add rust-analyzer"
+      problems=1
+    fi
+  done
+  if [ "$problems" = 1 ]; then
+    warn "Neovim skips a language server it cannot find; :LspStatus inside nvim says which."
+  fi
+}
+
 summary() {
   step "Done"
-  note "Start a new login shell (or run: . ~/.profile) to pick up PATH, then:"
+  note "Start a new login shell (or run: . ~/.profile, or . ~/.zprofile in zsh) to pick up PATH, then:"
   note "  tmux new -A -s ide     # survives SSH disconnects"
   note "  nvim .                 # file tree on the left; :Tips for the reference"
   note "Health check inside nvim: :checkhealth vim.lsp nvim-treesitter"
@@ -699,6 +812,7 @@ main() {
   setup_shell
   install_config
   install_plugins
+  check_tools
   summary
 }
 
