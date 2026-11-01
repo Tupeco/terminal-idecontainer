@@ -85,14 +85,27 @@ function M.greeting()
 end
 
 --- Open the whole of TIPS.md in a float: searchable, with markdown highlighting.
+---
+--- The float shows a scratch copy, not the file itself. Loading the file as a
+--- buffer (bufadd + bufload, as this once did) gave it a swap file under
+--- ~/.local/state/nvim/swap, so a second Neovim opening :Tips met E325
+--- ATTENTION; that directory is per user, so it hit any two instances in the
+--- same container, or on a host set up with install.sh. It also made the notes
+--- editable in place, and would have shared (and could have locked) a buffer
+--- the user already had open on the real file to edit it. A `nofile` buffer
+--- has no swap file and no name, is never written, and is wiped on close, so
+--- every :Tips reads the file afresh.
 function M.open()
   local path = tips_path()
   if not path then
     vim.notify("TIPS.md not found — see the volumes list in docker-compose.yml", vim.log.levels.WARN)
     return
   end
-  local buf = vim.fn.bufadd(path)
-  vim.fn.bufload(buf)
+  local buf = vim.api.nvim_create_buf(false, true) -- unlisted, scratch: nofile, noswapfile
+  vim.bo[buf].bufhidden = "wipe"
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, vim.fn.readfile(path))
+  vim.bo[buf].modifiable = false
+  vim.bo[buf].filetype = "markdown"
   local w = math.min(110, math.floor(vim.o.columns * 0.9))
   local h = math.floor(vim.o.lines * 0.9)
   vim.api.nvim_open_win(buf, true, {
