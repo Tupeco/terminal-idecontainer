@@ -825,6 +825,14 @@ Running it with `sudo` from your own account installs for root, not for you
 — it says so when that happens. Run it as the account you will work as; it
 elevates for apt on its own.
 
+Neovim finds the language servers through its own `$PATH`, so start it from a
+shell that has the PATH block. A terminal opened before the install, zsh or
+fish (which read neither file), and a desktop launcher (until you next log in)
+all lack it. Neovim 0.12 then skips each server silently, and completion falls
+back to words from the buffer. The status line flags such a server as
+`⚠ basedpyright not on PATH`, and `:LspStatus` names the directory it is in.
+See "Completion offers only words from the file" in TIPS.md.
+
 ## Known caveats
 
 - **Helix debugging is experimental upstream.** The DAP blocks in

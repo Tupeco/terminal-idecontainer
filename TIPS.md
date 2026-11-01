@@ -111,6 +111,7 @@ somewhere new and silently leaves the original alone. See
 |---|---|
 | `:lsp restart` | Reload the language server, e.g. after installing packages |
 | `:checktime` | Re-read files changed outside nvim |
+| `:LspStatus` | Which language servers serve this file, and why one does not |
 | `:checkhealth vim.lsp` | What the servers are doing (the old `:LspInfo`) |
 | `:RustStatus` | What rust-analyzer has loaded — crates, and their dependencies |
 | `:Inspect` | Which highlight group is colouring the thing under the cursor |
@@ -731,21 +732,35 @@ what you dragged. Two ways out:
 
 ### Finding your `.venv`
 
-Automatic. basedpyright's documented search order is:
+Automatic, for uv and for plain venvs. The status line shows the result: `py
+myproj/.venv` for the environment basedpyright resolves imports in, or `py: no
+venv` when it fell back to the system Python. In that case only what is
+installed system-wide will complete or resolve.
+
+basedpyright's documented search order is:
 
 1. `venv` + `venvPath` (least recommended)
 2. `python.pythonPath`
-3. **`.venv` at the project root** — where `uv venv` puts it
+3. `.venv` at the project root, which is where `uv venv` puts it
 4. system Python
 
-So a plain `uv venv` in the repo needs no configuration at all.
+On its own, basedpyright only ever finds a `.venv` sitting directly in the LSP
+root. nvim-lspconfig takes that root from the first marker in this list found
+upwards from the file: `pyrightconfig.json`, `pyproject.toml`, `setup.py`,
+`setup.cfg`, `requirements.txt`, `Pipfile`, `.git`. That misses two common
+layouts:
 
-The one thing to get right is what counts as "project root": that is the LSP
-root, which nvim-lspconfig derives from the first of these it finds —
-`pyrightconfig.json`, `pyproject.toml`, `setup.py`, `setup.cfg`,
-`requirements.txt`, `Pipfile`, `.git`. Your `.venv` has to sit beside one of
-those. In a monorepo where the `.git` is several levels above the Python
-package, the root can land higher than you expect and the venv is missed.
+- **A uv workspace.** Each member's `pyproject.toml` becomes the root, but uv
+  keeps the single `.venv` at the workspace root, one level up.
+- **`python -m venv venv`**, or any venv not named `.venv`.
+
+So `init.lua` fills in step 2 itself, before the server starts. It searches
+the root and then each parent, the way uv does, for `.venv` or `venv`. It
+accepts a directory only if it contains a `pyvenv.cfg`. If it finds none, it
+takes an activated `$VIRTUAL_ENV` or `$CONDA_PREFIX`. If there is nothing,
+it leaves the setting unset. A `venv`/`venvPath` in the project's own config
+still wins, being step 1. A venv nested *below* the root, say `backend/.venv`
+in a repo whose only marker is the top-level `.git`, is still missed.
 
 The escape hatch is a buffer-local command that nvim-lspconfig registers:
 
@@ -1226,6 +1241,51 @@ timeout rather than trading one against the other. Worth knowing what it does
 *not* promise: the README says nothing about whether it lets a mapping still
 fire after you pause longer than `timeoutlen`, so treat it as an indicator, not
 as a fix for the trap above. `timeoutlen` remains the actual fix.
+
+### Completion offers only words from the file
+
+You type in a Python or Rust file and the menu lists words already in your
+buffers, never modules, methods or keywords. That means no language server is
+attached. nvim-cmp's sources come in two groups, and the second, buffer words
+and paths, appears only when the first, the LSP and snippets, returns nothing.
+So the menu does not fail. It falls back, and the fallback looks like a
+completion that just works badly.
+
+The status line says which. On the right, lualine's own component names the
+servers that *are* attached. Next to it, in the warning colour, is any server
+that should be there and is not:
+
+| Status line | Meaning |
+|---|---|
+| `basedpyright starting` | Started, has not answered yet; give it a second |
+| `⚠ basedpyright not on PATH` | Nvim skipped it: the binary is not on *Neovim's* `$PATH` |
+| `⚠ rust_analyzer not running` | Binary present, no client: exited, or never found its root |
+
+`:LspStatus` explains the line for the current buffer: each server's root, the
+Python environment basedpyright was given, and, for a missing binary, whether
+it is sitting in `~/.local/bin` or `~/.cargo/bin`.
+
+"Not on PATH" is the common one, and Nvim 0.12 is completely silent about it.
+`vim.lsp.enable()` checks that each server's command is executable when a buffer
+gets its filetype. If the check fails, it writes `invalid "basedpyright"
+config: ... is not executable` to `lsp.log` and moves on, with nothing on screen.
+`:checkhealth vim.lsp` does report it, as one line among some 800 lines of
+client capabilities.
+
+On a machine set up with `install-scripts/install.sh`, the servers live in
+`~/.local/bin` (basedpyright, ruff) and `~/.cargo/bin` (rust-analyzer, cargo).
+The script adds both to `PATH` in `~/.profile` and `~/.bashrc`, so Neovim misses
+them when started from:
+
+- a terminal opened before the install: run `. ~/.profile`, or open a new one
+- a shell that is not bash, e.g. zsh or fish, which read neither file: add both
+  directories to that shell's own startup file
+- a desktop launcher, whose environment comes from the login session: log out
+  and back in
+
+rust-analyzer also needs `cargo`. nvim-lspconfig runs `cargo metadata` to find
+the workspace, and without it never starts the server. That is the case where
+`:LspStatus` says "cargo is not on Neovim's PATH".
 
 ### When a jump does nothing
 

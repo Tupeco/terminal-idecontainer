@@ -639,7 +639,24 @@ require("lazy").setup({
   },
 
   { "nvim-lualine/lualine.nvim", config = function()
-      require("lualine").setup({ options = { theme = "tokyonight" } })
+      local lsp = require("lspstatus")
+      require("lualine").setup({
+        options = { theme = "tokyonight" },
+        sections = {
+          -- lualine's default x section, preceded by three LSP components. Its own
+          -- `lsp_status` names the servers attached to this buffer, with a
+          -- spinner while they work. It never mentions one that should be
+          -- there and is not, so `unattached` does that, in the warning
+          -- colour ("⚠ basedpyright not on PATH"). `python_env` shows which
+          -- environment basedpyright resolves imports in. See lua/lspstatus.lua.
+          lualine_x = {
+            { lsp.unattached, color = lsp.unattached_color },
+            "lsp_status",
+            lsp.python_env,
+            "encoding", "fileformat", "filetype",
+          },
+        },
+      })
     end },
 
   { "windwp/nvim-autopairs", event = "InsertEnter", opts = {} },
@@ -700,7 +717,65 @@ local caps = vim.tbl_deep_extend(
 
 vim.lsp.config("*", { capabilities = caps })
 
+-- The Python environment basedpyright resolves imports in.
+--
+-- basedpyright looks for `.venv` in its workspace root by itself, and nowhere
+-- else. Measured with basedpyright 1.40.2, whose `--verbose` prints the
+-- "Execution environment" it settled on:
+--
+--   uv project, .venv beside pyproject.toml    .venv
+--   uv workspace member, .venv one level up    system Python
+--   `python -m venv venv`                      system Python
+--
+-- The workspace case is the one that bites. nvim-lspconfig roots basedpyright
+-- at the nearest pyproject.toml, which in a uv workspace is the member's, while
+-- uv keeps the one .venv at the workspace root. A miss is quiet: builtins and
+-- the standard library complete as usual, and only third-party imports come
+-- back unresolved.
+--
+-- So look the way uv does, from the root upward, for `.venv`, and for `venv`,
+-- the other common name. Failing that, an activated environment. Whatever is
+-- found goes in as `python.pythonPath`, which in basedpyright's order ranks
+-- above its own `.venv` lookup and below `venv`/`venvPath` in a project's
+-- config file, so an explicit project setting still wins. Nothing found: no
+-- setting, and basedpyright uses the python3 on PATH as before.
+local function python_env(root)
+  local dir = root
+  while dir do
+    for _, name in ipairs({ ".venv", "venv" }) do
+      local env = dir .. "/" .. name
+      -- pyvenv.cfg is what makes a directory a venv, rather than a `venv/`
+      -- that holds something else.
+      if vim.uv.fs_stat(env .. "/pyvenv.cfg") and vim.fn.executable(env .. "/bin/python") == 1 then
+        return env
+      end
+    end
+    local parent = vim.fs.dirname(dir)
+    if parent == dir then break end
+    dir = parent
+  end
+  for _, var in ipairs({ "VIRTUAL_ENV", "CONDA_PREFIX" }) do
+    local env = vim.env[var]
+    if env and env ~= "" and vim.fn.executable(env .. "/bin/python") == 1 then
+      return env
+    end
+  end
+end
+
 vim.lsp.config("basedpyright", {
+  -- Runs once per client, so once per project root. `:lsp restart` runs it
+  -- again, which is how a venv created after the server started gets picked
+  -- up.
+  before_init = function(_, config)
+    local env = python_env(config.root_dir or vim.fn.getcwd())
+    if env then
+      -- Assigned into config.settings rather than replacing it: the client
+      -- holds that same table as client.settings, which is what it sends the
+      -- server after `initialize`. A new table would never be sent.
+      config.settings.python = vim.tbl_extend("force", config.settings.python or {},
+        { pythonPath = env .. "/bin/python" })
+    end
+  end,
   settings = {
     basedpyright = {
       analysis = {
@@ -727,7 +802,12 @@ vim.lsp.config("rust_analyzer", {
   },
 })
 
-vim.lsp.enable({ "basedpyright", "ruff", "rust_analyzer" })
+local lsp_servers = { "basedpyright", "ruff", "rust_analyzer" }
+vim.lsp.enable(lsp_servers)
+
+-- `:LspStatus` and the status-line components, which need to know what was
+-- enabled to notice a server that should be running and is not.
+require("lspstatus").setup(lsp_servers)
 
 vim.api.nvim_create_autocmd("LspAttach", {
   callback = function(args)
