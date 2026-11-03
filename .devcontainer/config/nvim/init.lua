@@ -780,6 +780,9 @@ vim.lsp.config("basedpyright", {
         { pythonPath = env .. "/bin/python" })
     end
   end,
+  -- Auto-imports from installed packages that no open file imports yet,
+  -- which basedpyright does not index on its own. See lua/pylibindex.lua.
+  on_init = function(client) require("pylibindex").attach(client) end,
   settings = {
     basedpyright = {
       analysis = {

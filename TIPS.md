@@ -791,6 +791,30 @@ will have bound to the system Python.
 
 Ruff needs nothing; it does not resolve imports against site-packages.
 
+### Auto-imports from packages no file imports yet
+
+Type `DataFr`, `<C-Space>`, and `DataFrame [pandas]` is offered with
+`from pandas import DataFrame` added on confirm, even though no open file
+imports pandas. basedpyright cannot do that on its own: it offers auto-imports
+only from modules some open buffer already imports. So when the server starts,
+`lua/pylibindex.lua` hands it an index: a document, never shown, that imports
+every top-level package in the project's environment. That covers what each
+package exports at the top, not its submodules (`pandas.DataFrame`, but not
+`matplotlib.pyplot.subplots` until something imports `matplotlib.pyplot`).
+
+It is not free. With 39 packages (numpy, pandas, scipy, matplotlib, django,
+boto3 and friends), the index is ready ~1.6 s after the server starts,
+basedpyright uses ~160 MB more at once and ~400 MB more after a session of
+completing, and completing a bare name takes 150–850 ms instead of 30–180 ms
+(member completion after a `.` is unaffected). The list is also noisier:
+libraries without type information re-export everything they import, so
+`defaultd` offers `defaultdict` from `pandas.core.apply` as well as from
+`collections`.
+
+To turn it off, `:let g:pylibindex = v:false` and `:lsp restart basedpyright`.
+Packages installed later join the index on the next restart, as in the
+section above.
+
 ### `:lsp` versus `:Lsp*`
 
 Nvim 0.12 ships a core `:lsp` command — `:lsp enable`, `:lsp disable`,
