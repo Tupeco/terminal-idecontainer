@@ -487,6 +487,16 @@ project when the current window is not a file (neo-tree, say). You can also
 give it a topic (`:Walkthrough how setup picks ports`), or a visual selection
 (`:'<,'>Walkthrough`) for just those lines.
 
+Run from a `:DiffviewOpen` tab, it narrates the diff instead, in that tab.
+Claude is told the git command behind the diff and its files, and each stop
+selects its file in Diffview and highlights the lines on the right-hand side,
+with the old version beside them. That works for any revisions, including two
+commits whose files are not on disk. A stop in a file outside the diff opens
+in a float over the diff and closes at the next stop in it. Diffview can only
+switch files while its tab is on screen, so a stop that comes up while you are
+in another tab is shown when you go back. File history
+(`:DiffviewFileHistory`) gets the ordinary tab.
+
 Set it up per project:
 
 ```sh
