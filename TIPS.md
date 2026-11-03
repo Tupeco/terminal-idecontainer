@@ -123,6 +123,7 @@ somewhere new and silently leaves the original alone. See
 | `:Walkthrough` | Claude Code tours this file aloud in a new tab, highlighting as it goes |
 | `:Walkthrough <topic>` / `:'<,'>Walkthrough` | The same, for a topic or the selected lines |
 | `:Walkthrough` in a `:DiffviewOpen` tab | Tours the diff in that tab, stop by stop through its files |
+| `:Walkthrough!` in a `:DiffviewOpen` tab | A deep tour: Claude reads the code as it was before the change first |
 | `:WalkthroughReplay [file]` | Replay a tour saved in `.tours/` (default: the newest) |
 | `:WalkthroughClear` | Remove the walkthrough highlight and subtitle |
 
@@ -1124,6 +1125,12 @@ float over the diff. `:DiffviewClose` closes Claude's pane with the tab, but
 Claude keeps running hidden, so finish with it first, or reach it again with
 `:ls` and `:buffer <n>`. `:WalkthroughReplay` from a Diffview tab replays there too,
 which suits a tour saved from that diff.
+
+A diff tour starts quickly because Claude only skims, so it mostly explains
+the hunks it can see. `:Walkthrough!` makes it read first: each changed file
+as it was before the change, and the code those changes call or are called
+from, on the same side. The narration then covers how it worked before and
+what the change does to that. Expect to wait longer for the first stop.
 
 The narrator saves every tour to `.tours/` in the project as Claude writes
 it. `:WalkthroughReplay` (Tab completes the files) plays one again in the same

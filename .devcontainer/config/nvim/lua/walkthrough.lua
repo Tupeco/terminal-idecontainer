@@ -396,8 +396,9 @@ end
 -- diff, a branch not checked out, or uncommitted work.
 --
 -- `context`, if given, is a paragraph placed after the first line: in diff
--- mode, what the diff is (diff_context).
-local function prompt(topic, context)
+-- mode, what the diff is (diff_context). `first_step`, if given, replaces
+-- step 1, which is how a deep tour (deep_step) asks for reading first.
+local function prompt(topic, context, first_step)
   local lines = {
     "Give me a narrated walkthrough of " .. topic .. ".",
     "",
@@ -408,7 +409,7 @@ local function prompt(topic, context)
   return table.concat(vim.list_extend(lines, {
     "Use the `narrator` MCP server's tour tools; it speaks in my browser player and highlights each stop in my Neovim as it plays.",
     "",
-    "1. Skim enough to outline 4 to 12 stops that tell the story of how it works, in order. Post the outline as one short list. Do not read everything first: playback should start soon.",
+    first_step or "1. Skim enough to outline 4 to 12 stops that tell the story of how it works, in order. Post the outline as one short list. Do not read everything first: playback should start soon.",
     "2. Call narrator `status`. If no player is connected, ask me to open the address that `./dev narrator-url` prints on the host, and wait until I say it is open.",
     "3. Call `tour_start` with project_root set to your working directory, a short title, and, if the line numbers do not simply refer to the checked-out commit, `basis` saying what they refer to (uncommitted changes, a diff between two revisions, and so on). The narrator saves the tour under .tours/ by itself; do not save it yourself.",
     "4. Write the first one or two stops and send them with `tour_add` at once; it returns immediately and they start playing. Then read on and keep adding stops one to three at a time, staying ahead of me. Each stop is a file path relative to project_root, first and last line (1-based, inclusive), a label of a few words, and one to four sentences of text.",
@@ -506,13 +507,20 @@ end
 -- A paragraph telling Claude what the diff in the Diffview tab is: the git
 -- command that prints it, what each side holds, and its files, which in the
 -- default `:DiffviewOpen` include untracked ones that `git diff` leaves out.
+--
+-- When both sides are commits, it also says whether the checkout is one of
+-- them. A file the diff does not touch is the same on both sides, so Claude
+-- reading it from disk is right whenever the checkout is either side; with
+-- `:DiffviewOpen v1.0..v2.0` on main it is neither, and Claude would read
+-- code from main without any sign that it was the wrong code.
+local function short(h) return h and h:sub(1, 12) or "?" end
+
 local function diff_context(view)
   local RevType = require("diffview.vcs.rev").RevType
   local function side(rev)
     if rev.type == RevType.LOCAL then return "the working tree (the files on disk)" end
     if rev.type == RevType.STAGE then return "the index (read a file with `git show :<path>`)" end
-    local c = rev.commit and rev.commit:sub(1, 12) or "?"
-    return string.format("commit %s (read a file with `git show %s:<path>`; the copy on disk may differ)", c, c)
+    return string.format("commit %s (read a file with `git show %s:<path>`)", short(rev.commit), short(rev.commit))
   end
   local ok, args = pcall(function() return view.adapter:rev_to_args(view.left, view.right) end)
   local cmd = "git diff"
@@ -544,15 +552,54 @@ local function diff_context(view)
   if n > 0 then
     table.insert(out, "Its files: " .. table.concat(files, "; ") .. ".")
   end
+  if view.left.type == RevType.COMMIT and view.right.type == RevType.COMMIT then
+    local top = view.adapter.ctx.toplevel
+    local head = vim.trim(vim.fn.system({ "git", "-C", top, "rev-parse", "HEAD" }))
+    local dirty = vim.trim(vim.fn.system({ "git", "-C", top, "status", "--porcelain", "--untracked-files=no" })) ~= ""
+    local but = dirty and ", apart from my uncommitted changes" or ""
+    if head == view.right.commit then
+      table.insert(out, "My checkout is the right side's commit, so the files on disk are the right side" .. but .. ".")
+    elseif head == view.left.commit then
+      table.insert(out, "My checkout is the left side's commit, so the files on disk are the left side" .. but .. ".")
+    else
+      table.insert(out, string.format("My checkout (%s) is neither side, so the files on disk match neither: read and search the code only through git at the side's commit (`git show <commit>:<path>`, `git grep <pattern> <commit>`), never on disk.", short(head)))
+    end
+  end
   table.insert(out, "Give each stop's lines as numbered on the right-hand side, the new version: a stop in one of these files opens it in the diff, with its old version beside it, and a stop in any other file opens in a float over the diff, so keep most stops in the diff's files. Removed lines cannot be highlighted; talk about them at the lines that replaced them, or at the nearest lines kept. Pass `basis` to `tour_start`, saying what the diff is.")
   return table.concat(out, " ")
 end
 
+-- Step 1 for a deep tour of a diff (`:Walkthrough!`): read the code as it
+-- was before outlining anything. The ordinary step 1 skims so that playback
+-- starts within seconds, and Claude then narrates mostly from the hunks, with
+-- their three lines of context: it never sees what a changed function did
+-- before, or what calls it. That costs a wait, tens of seconds to minutes
+-- with the size of the change, so it is asked for rather than the default.
+local function deep_step(view)
+  local RevType = require("diffview.vcs.rev").RevType
+  local rev = view.left
+  local read, search
+  if rev.type == RevType.COMMIT then
+    read = string.format("`git show %s:<path>`", short(rev.commit))
+    search = string.format("`git grep -n <pattern> %s`", short(rev.commit))
+  elseif rev.type == RevType.STAGE then
+    read, search = "`git show :<path>`", "`git grep -n --cached <pattern>`"
+  else
+    read, search = "the files on disk", "an ordinary search"
+  end
+  return "1. This is a deep tour: read before you outline, even though playback starts later. First read the whole diff. Then read each changed file in full as it is on the left side, before the change (" .. read .. "), and the code that the changed parts call and the code that calls them, also on the left side (" .. search .. "), until you know how this worked before the change and what depends on it. Then outline 4 to 12 stops that tell the story of the change, in order, and post the outline as one short list. In the narration, say how each part worked before, what the change does to it, and why, and mention code outside the diff that the change affects."
+end
+
 -- `:Walkthrough [topic]`, or over a visual range, those lines of this file.
--- With neither, the current file. In a Diffview tab: the diff, in that tab.
+-- With neither, the current file. In a Diffview tab: the diff, in that tab,
+-- and with a bang, a deep tour of it.
 function M.command(opts)
   if not have_claude() then return end
   local view = current_diff_view()
+  if opts.bang and not view then
+    vim.notify("Walkthrough!: a deep tour is for a diff; run it in a :DiffviewOpen tab. Starting an ordinary one.",
+      vim.log.levels.WARN)
+  end
   if view then
     set_diff(view)
     local topic
@@ -564,7 +611,7 @@ function M.command(opts)
     else
       topic = "the changes in this diff"
     end
-    open_terminal({ "claude", prompt(topic, diff_context(view)) })
+    open_terminal({ "claude", prompt(topic, diff_context(view), opts.bang and deep_step(view) or nil) })
     return
   end
   set_diff(nil)
@@ -641,7 +688,8 @@ function M.setup()
   vim.api.nvim_create_user_command("Walkthrough", M.command, {
     nargs = "*",
     range = true,
-    desc = "Narrated walkthrough by Claude Code (of a topic, a range, or this file)",
+    bang = true,
+    desc = "Narrated walkthrough by Claude Code (of a topic, a range, or this file; ! for a deep tour of a diff)",
   })
   vim.api.nvim_create_user_command("WalkthroughReplay", M.replay, {
     nargs = "?",
