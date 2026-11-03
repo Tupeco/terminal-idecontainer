@@ -270,6 +270,9 @@ require("lazy").setup({
     config = function()
       local cmp = require("cmp")
       local luasnip = require("luasnip")
+      -- Auto-imports from installed packages that no open file imports yet,
+      -- which basedpyright does not offer. See lua/pyexports.lua.
+      require("pyexports").setup()
       cmp.setup({
         snippet = { expand = function(args) luasnip.lsp_expand(args.body) end },
         mapping = cmp.mapping.preset.insert({
@@ -289,6 +292,7 @@ require("lazy").setup({
         }),
         sources = cmp.config.sources({
           { name = "nvim_lsp" },
+          { name = "pyexports" },
           { name = "luasnip" },
         }, {
           { name = "buffer" },

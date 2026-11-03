@@ -791,6 +791,45 @@ will have bound to the system Python.
 
 Ruff needs nothing; it does not resolve imports against site-packages.
 
+### Auto-imports from packages no file imports yet
+
+Type `DataFr`, `<C-Space>`, and `DataFrame [pandas]` is offered; confirming
+it adds `from pandas import DataFrame` below the file's imports, even though
+no open file imports pandas. One `u` takes back both the name and the import.
+
+basedpyright cannot do this on its own: it offers auto-imports only from
+packages some open buffer already imports. So `lua/pyexports.py`, run with the
+project's interpreter, reads the top-level `__init__` of every installed
+package (without importing it) and lists what it exports, and
+`lua/pyexports.lua` offers those names as an extra completion source. The
+list is cached per environment under `~/.cache/nvim/pyexports/` and rebuilt
+when the installed packages change, which it notices within 30 s of a
+`uv add`, no restart needed. The language server never sees it, so it costs
+basedpyright nothing; 39 packages (numpy, pandas, scipy, matplotlib, django,
+boto3 and friends) come to ~1900 names, read in 0.35 s, or 40 ms from cache.
+
+What it does not do:
+
+- **Submodules.** `pandas.DataFrame`, yes; `matplotlib.pyplot.subplots`, no,
+  until something imports `matplotlib.pyplot`. Pylance's default index draws
+  the same line.
+- **Names built at run time.** A package whose `__init__` assembles its
+  exports in code is covered only as far as a literal `__all__` lists them.
+- **Sorting.** The import goes after the last leading import, not in order;
+  `<leader>ca` → "Organize imports" (ruff) sorts it, as for basedpyright's own
+  auto-imports.
+- **Kinds** of re-exported names are guessed from their spelling, so
+  pydantic's `Field`, a function, shows as a class.
+
+Once a loaded buffer imports a package, this source stops offering it and
+basedpyright's own completion takes over. basedpyright also covers packages
+pulled in *by* those (importing pandas brings numpy), which this cannot see,
+so such a name can show up twice, as `linspace [numpy]` from each. Either
+entry adds the same import.
+
+`:lua =require("pyexports").status()` shows what was loaded per interpreter,
+and the error if the script failed.
+
 ### `:lsp` versus `:Lsp*`
 
 Nvim 0.12 ships a core `:lsp` command — `:lsp enable`, `:lsp disable`,
