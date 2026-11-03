@@ -103,8 +103,16 @@ end
 --- Open the index document in `client`. Called from basedpyright's on_init,
 --- so once per client: `:lsp restart` builds a fresh index, which is how
 --- packages installed since the server started get picked up.
+---
+--- Off unless `g:pylibindex` is v:true or 1 (what `--cmd 'let g:pylibindex = 1'`
+--- gives Lua), because of the costs above: the extra
+--- memory and slower bare-name completion are paid in every Python project,
+--- while the gain matters only when reaching for a package no open file
+--- imports yet. Read here, at on_init, so setting it and restarting the
+--- server is enough; nothing needs reloading.
 function M.attach(client)
-  if vim.g.pylibindex == false then return end
+  local on = vim.g.pylibindex
+  if on ~= true and on ~= 1 then return end
   local root = client.root_dir
   if not root then return end
   local python = vim.tbl_get(client.settings or {}, "python", "pythonPath") or "python3"

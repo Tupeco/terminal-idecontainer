@@ -793,11 +793,11 @@ Ruff needs nothing; it does not resolve imports against site-packages.
 
 ### Auto-imports from packages no file imports yet
 
-Type `DataFr`, `<C-Space>`, and `DataFrame [pandas]` is offered with
-`from pandas import DataFrame` added on confirm, even though no open file
-imports pandas. basedpyright cannot do that on its own: it offers auto-imports
-only from modules some open buffer already imports. So when the server starts,
-`lua/pylibindex.lua` hands it an index: a document, never shown, that imports
+Off by default. With it on, type `DataFr`, `<C-Space>`, and `DataFrame
+[pandas]` is offered with `from pandas import DataFrame` added on confirm, even
+though no open file imports pandas. basedpyright cannot do that on its own: it
+offers auto-imports only from modules some open buffer already imports. So
+when the server starts, `lua/pylibindex.lua` hands it an index: a document, never shown, that imports
 every top-level package in the project's environment. That covers what each
 package exports at the top, not its submodules (`pandas.DataFrame`, but not
 `matplotlib.pyplot.subplots` until something imports `matplotlib.pyplot`).
@@ -811,8 +811,15 @@ libraries without type information re-export everything they import, so
 `defaultd` offers `defaultdict` from `pandas.core.apply` as well as from
 `collections`.
 
-To turn it off, `:let g:pylibindex = v:false` and `:lsp restart basedpyright`.
-Packages installed later join the index on the next restart, as in the
+That cost is why it is opt-in. To turn it on for the running Neovim:
+
+```vim
+:let g:pylibindex = v:true
+:lsp restart basedpyright
+```
+
+or from the start, `nvim --cmd 'let g:pylibindex = 1'` (a shell alias keeps
+it). Packages installed later join the index on the next restart, as in the
 section above.
 
 ### `:lsp` versus `:Lsp*`
