@@ -512,7 +512,9 @@ end
 -- them. A file the diff does not touch is the same on both sides, so Claude
 -- reading it from disk is right whenever the checkout is either side; with
 -- `:DiffviewOpen v1.0..v2.0` on main it is neither, and Claude would read
--- code from main without any sign that it was the wrong code.
+-- code from main without any sign that it was the wrong code. The same goes
+-- for CLAUDE.md, which Claude Code loads from the working directory at start,
+-- so from the checkout, whatever the diff is between.
 local function short(h) return h and h:sub(1, 12) or "?" end
 
 local function diff_context(view)
@@ -562,7 +564,7 @@ local function diff_context(view)
     elseif head == view.left.commit then
       table.insert(out, "My checkout is the left side's commit, so the files on disk are the left side" .. but .. ".")
     else
-      table.insert(out, string.format("My checkout (%s) is neither side, so the files on disk match neither: read and search the code only through git at the side's commit (`git show <commit>:<path>`, `git grep <pattern> <commit>`), never on disk.", short(head)))
+      table.insert(out, string.format("My checkout (%s) is neither side, so the files on disk match neither: read and search the code only through git at the side's commit (`git show <commit>:<path>`, `git grep <pattern> <commit>`), never on disk. The project's CLAUDE.md you were given is the checkout's too, so check what it says against the sides before relying on it.", short(head)))
     end
   end
   table.insert(out, "Give each stop's lines as numbered on the right-hand side, the new version: a stop in one of these files opens it in the diff, with its old version beside it, and a stop in any other file opens in a float over the diff, so keep most stops in the diff's files. Removed lines cannot be highlighted; talk about them at the lines that replaced them, or at the nearest lines kept. Pass `basis` to `tour_start`, saying what the diff is.")
@@ -575,19 +577,52 @@ end
 -- their three lines of context: it never sees what a changed function did
 -- before, or what calls it. That costs a wait, tens of seconds to minutes
 -- with the size of the change, so it is asked for rather than the default.
+--
+-- The README is asked for too, as background: Claude Code loads CLAUDE.md by
+-- itself (from the working directory and its parents) but not the README, and
+-- a project's README says what the code is for, which a diff never does. It is
+-- named as it is at the left revision, since a tour of an old range may come
+-- from before a rename or before the README existed.
+local function readme_at(top, commit)
+  local names
+  if commit then
+    names = vim.fn.systemlist({ "git", "-C", top, "ls-tree", "--name-only", commit })
+    if vim.v.shell_error ~= 0 then names = {} end
+  else
+    names = vim.tbl_map(function(f) return vim.fn.fnamemodify(f, ":t") end,
+      vim.fn.glob(top .. "/README*", false, true))
+  end
+  for _, want in ipairs({ "README.md", "README.rst", "README.txt", "README" }) do
+    if vim.tbl_contains(names, want) then return want end
+  end
+  for _, n in ipairs(names) do
+    if n:match("^README") then return n end
+  end
+  return nil
+end
+
 local function deep_step(view)
   local RevType = require("diffview.vcs.rev").RevType
   local rev = view.left
-  local read, search
+  local read, search, readme
+  local top = view.adapter.ctx.toplevel
   if rev.type == RevType.COMMIT then
     read = string.format("`git show %s:<path>`", short(rev.commit))
     search = string.format("`git grep -n <pattern> %s`", short(rev.commit))
+    readme = readme_at(top, rev.commit)
+    readme = readme and string.format("`git show %s:%s`", short(rev.commit), readme)
   elseif rev.type == RevType.STAGE then
     read, search = "`git show :<path>`", "`git grep -n --cached <pattern>`"
+    readme = readme_at(top, nil)
+    readme = readme and string.format("`git show :%s`", readme)
   else
     read, search = "the files on disk", "an ordinary search"
+    readme = readme_at(top, nil)
   end
-  return "1. This is a deep tour: read before you outline, even though playback starts later. First read the whole diff. Then read each changed file in full as it is on the left side, before the change (" .. read .. "), and the code that the changed parts call and the code that calls them, also on the left side (" .. search .. "), until you know how this worked before the change and what depends on it. Then outline 4 to 12 stops that tell the story of the change, in order, and post the outline as one short list. In the narration, say how each part worked before, what the change does to it, and why, and mention code outside the diff that the change affects."
+  local first = readme
+    and ("First read the project's README for what the project is for (" .. readme .. ", as it was before the change), then the whole diff.")
+    or "First read the whole diff."
+  return "1. This is a deep tour: read before you outline, even though playback starts later. " .. first .. " Then read each changed file in full as it is on the left side, before the change (" .. read .. "), and the code that the changed parts call and the code that calls them, also on the left side (" .. search .. "), until you know how this worked before the change and what depends on it. Then outline 4 to 12 stops that tell the story of the change, in order, and post the outline as one short list. In the narration, say how each part worked before, what the change does to it, and why, and mention code outside the diff that the change affects."
 end
 
 -- `:Walkthrough [topic]`, or over a visual range, those lines of this file.

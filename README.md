@@ -499,15 +499,17 @@ in another tab is shown when you go back. File history
 
 An ordinary diff tour starts playing within seconds, so Claude narrates
 mostly from the hunks and their three lines of context. `:Walkthrough!` asks
-for a deep tour instead. Before outlining, Claude reads each changed file in
-full as it was before the change, and the code around the changed parts on
-that side too: what they call and what calls them. Then it narrates how each
+for a deep tour instead. Before outlining, Claude reads the project's README
+and each changed file in full as they were before the change, and the code
+around the changed parts on that side too: what they call and what calls
+them. CLAUDE.md, where `/init` writes its summary of a project, needs no
+asking: Claude Code loads it at start in every tour. Then it narrates how each
 part worked, what the change does to it, and why. The first stop takes longer
 to arrive, from tens of seconds to minutes depending on how far the change
 reaches. When both sides are commits, the prompt also says whether your
 checkout is one of them. If it is neither, Claude is told to read the code
-only through git at each side's commit, since the files on disk would be
-from some third version.
+only through git at each side's commit, since the files on disk, CLAUDE.md
+among them, would be from some third version.
 
 Set it up per project:
 

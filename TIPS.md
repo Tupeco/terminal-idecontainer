@@ -1127,8 +1127,8 @@ Claude keeps running hidden, so finish with it first, or reach it again with
 which suits a tour saved from that diff.
 
 A diff tour starts quickly because Claude only skims, so it mostly explains
-the hunks it can see. `:Walkthrough!` makes it read first: each changed file
-as it was before the change, and the code those changes call or are called
+the hunks it can see. `:Walkthrough!` makes it read first: the README and
+each changed file as they were before the change, and the code those changes call or are called
 from, on the same side. The narration then covers how it worked before and
 what the change does to that. Expect to wait longer for the first stop.
 
