@@ -12,7 +12,8 @@ Two ways to use it from Claude Code:
   `speak`: one utterance, which returns once a player reports it has finished
   playing. For answering a question after the listener has stopped a tour.
 
-Every tour is also saved, as it is written, to .tours/ in the project, and
+Every tour of code git can give back (committed files, or a diff between two
+commits) is also saved, as it is written, to .tours/ in the project, and
 `tour_replay` plays a saved one again without Claude writing it afresh.
 
 Why a queue rather than Claude calling `speak` once per stop, as the first
@@ -63,7 +64,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import glob
-import hashlib
 import hmac
 import io
 import json
@@ -168,13 +168,6 @@ def git(root: str, *args: str) -> str | None:
         return None
     # rstrip only: `status --porcelain` lines start with a meaningful space.
     return r.stdout.rstrip() if r.returncode == 0 else None
-
-
-def file_digest(path: str) -> str | None:
-    try:
-        return hashlib.sha256(Path(path).read_bytes()).hexdigest()[:16]
-    except OSError:
-        return None
 
 
 def slugify(title: str) -> str:
@@ -325,9 +318,40 @@ class NvimLink:
         return others[0] if len(others) == 1 else None
 
 
+SHA = re.compile(r"[0-9a-f]{40}")
+
+
+def git_ok(root: str, *args: str) -> bool:
+    """Whether `git -C root ...` succeeded, for the commands that answer by
+    exit status alone (`cat-file -e`, `diff --quiet`)."""
+    try:
+        r = subprocess.run(["git", "-C", root, *args], capture_output=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return r.returncode == 0
+
+
+def commit_of(root: str, rev: Any) -> str | None:
+    """The full SHA of commit `rev`, or None if git does not know it. "worktree"
+    and "index", the other sides a Diffview diff can have, come out None too."""
+    if not isinstance(rev, str) or not rev or rev.startswith("-"):
+        return None
+    out = git(root, "rev-parse", "--verify", "-q", f"{rev}^{{commit}}")
+    return out if out and SHA.fullmatch(out) else None
+
+
+def repo_path(top: str, root: str, file: str) -> str | None:
+    """`file` (relative to root, or absolute) relative to the repository's top,
+    as `git show <rev>:<path>` wants it; None if it lies outside."""
+    path = file if os.path.isabs(file) else os.path.join(root, file)
+    rel = os.path.relpath(os.path.realpath(path), os.path.realpath(top))
+    return None if rel == ".." or rel.startswith("../") else rel
+
+
 class TourFile:
     """A tour as saved under .tours/, so it can be replayed without Claude
-    writing it again (`tour_replay`).
+    writing it again (`tour_replay`, or `narrator replay` with no Claude at
+    all).
 
     Saved by the narrator rather than left to Claude, which saved them only
     when asked and in whatever shape it chose that day. Rewritten whole after
@@ -336,28 +360,56 @@ class TourFile:
     to the end.
 
     The stops are kept exactly as Claude sent them, and their line numbers only
-    mean something against the code they were written for. A tour need not be
-    about a commit -- it may be about uncommitted work or a diff -- so that is
-    recorded several ways: `commit` and `branch` as they were when the tour
-    started, `dirty` (what `git status` listed then), `basis` (Claude's own
-    words, when it said the tour was about something else), and `files`, a
-    digest of every narrated file as it was when its first stop arrived. The
-    digests are what tour_replay checks, since they hold however the tour came
-    about; a hand-saved tour with only `commit` is checked with `git diff`.
+    mean something against the code they were written for. So a tour is saved
+    only when git can give that code back: an ordinary tour of files committed
+    and unchanged at HEAD (`commit`), or a tour of a Diffview diff between two
+    commits (`diff`, whose right-hand side the line numbers count). A replay
+    then shows exactly that code, from git if the files on disk have moved on,
+    and needs no record of what changed since.
+
+    A tour that narrates uncommitted work is played but not saved. Earlier
+    versions saved it anyway, with digests of the files and a `dirty` list, and
+    a replay could only say that the highlights might be off; there was no way
+    to show the code as it had been. `:Walkthrough` asks before such a tour
+    (Neovim for a diff against the working tree, Claude for an ordinary tour,
+    since only it knows which files it will narrate), so the listener knows it
+    will not be kept. Uncommitted changes to files the tour does not narrate do
+    not matter. The first stop in a file that fails the check removes anything
+    already written: half a tour that cannot be shown right is worse than none.
     """
 
-    def __init__(self, title: str, root: str, basis: str | None) -> None:
+    def __init__(self, title: str, root: str, basis: str | None, diff: dict | None) -> None:
         self.title = title
         self.root = root
         self.basis = basis
         self.top = git(root, "rev-parse", "--show-toplevel")
         self.dir = Path(self.top or root) / TOURS_DIR
-        self.commit = git(root, "rev-parse", "--short", "HEAD") if self.top else None
+        self.commit = commit_of(root, "HEAD") if self.top else None
         self.branch = git(root, "rev-parse", "--abbrev-ref", "HEAD") if self.commit else None
-        status = git(root, "status", "--porcelain") if self.top else None
-        self.dirty = [line[3:] for line in status.splitlines()] if status else []
         self.created = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
-        self.files: dict[str, str | None] = {}
+        self.diff: dict | None = None
+        # Why the tour is not being saved, or None while it is.
+        self.unsaved: str | None = None
+        if not self.top:
+            self.unsaved = "the project is not in a git repository"
+        elif not self.commit:
+            self.unsaved = "the repository has no commits yet"
+        elif diff:
+            left, right = commit_of(root, diff.get("left")), commit_of(root, diff.get("right"))
+            if not (left and right):
+                self.unsaved = "the diff includes uncommitted changes (its working tree or index side)"
+            else:
+                paths = diff.get("paths") or []
+                self.diff = {
+                    "left": left,
+                    "right": right,
+                    "paths": list(paths) if isinstance(paths, list) else [],
+                }
+                if isinstance(diff.get("rev_arg"), str):
+                    self.diff["rev_arg"] = diff["rev_arg"]
+        # The commit the stops' line numbers refer to.
+        self.rev = self.diff["right"] if self.diff else self.commit
+        self.checked: set[str] = set()
         self.path: Path | None = None
         # tour_add saves from worker threads, and two in quick succession could
         # finish out of order; the stop count tells a stale snapshot apart.
@@ -400,14 +452,41 @@ class TourFile:
         with path.open("a") as f:
             f.write(f"\n# saved narrated walkthroughs (narrator)\n/{TOURS_DIR}/\n")
 
-    def save(self, stops: list[StopSpec], complete: bool) -> Path:
+    def _check(self, file: str) -> str | None:
+        """Why `file` keeps the tour from being saved, or None if git has it."""
+        rel = repo_path(self.top, self.root, file)  # type: ignore[arg-type]
+        if rel is None:
+            return f"{file} is outside the repository"
+        if self.diff:
+            if not git_ok(self.top, "cat-file", "-e", f"{self.rev}:{rel}"):
+                return f"{file} is not in the diff's right-hand commit {self.rev[:12]}"
+            return None
+        if not git_ok(self.top, "cat-file", "-e", f"HEAD:{rel}"):
+            return f"{file} is not committed"
+        # Against HEAD, so staged changes count as uncommitted too.
+        if not git_ok(self.top, "diff", "--quiet", "HEAD", "--", rel):
+            return f"{file} has uncommitted changes"
+        return None
+
+    def _discard(self) -> None:
+        if self.path is not None:
+            self.path.unlink(missing_ok=True)
+            self.path = None
+
+    def save(self, stops: list[StopSpec], complete: bool) -> Path | None:
+        """Write the tour, or None if it cannot be saved (see `unsaved`)."""
         with self.lock:
+            if self.unsaved:
+                return None
             if len(stops) < self.written:
-                return self.path  # type: ignore[return-value]
+                return self.path
             for spec in stops:
-                if spec.file not in self.files:
-                    path = spec.file if os.path.isabs(spec.file) else os.path.join(self.root, spec.file)
-                    self.files[spec.file] = file_digest(path)
+                if spec.file not in self.checked:
+                    self.checked.add(spec.file)
+                    if why := self._check(spec.file):
+                        self.unsaved = why
+                        self._discard()
+                        return None
             if self.path is None:
                 self.path = self._choose_path()
             head: dict[str, Any] = {
@@ -416,11 +495,11 @@ class TourFile:
                 "commit": self.commit,
                 "branch": self.branch,
             }
+            if self.diff:
+                head["diff"] = self.diff
             if self.basis:
                 head["basis"] = self.basis
-            if self.dirty:
-                head["dirty"] = self.dirty
-            head |= {"created": self.created, "complete": complete, "files": self.files}
+            head |= {"created": self.created, "complete": complete}
             # One stop per line, like the tours first saved by hand: a diff of
             # two versions of a tour, or a skim of one, reads stop by stop.
             lines = ["{"]
@@ -435,20 +514,43 @@ class TourFile:
             return self.path
 
 
-def tour_drift(data: dict, root: str) -> list[str] | None:
-    """Narrated files changed since a saved tour was written, or None if there
-    is no way to tell (a hand-saved tour whose commit git does not know)."""
-    files = data.get("files") or {}
-    if files:
-        return [
-            rel for rel, digest in files.items()
-            if file_digest(rel if os.path.isabs(rel) else os.path.join(root, rel)) != digest
-        ]
-    if data.get("commit"):
-        rels = sorted({s["file"] for s in data.get("stops", [])})
-        out = git(root, "diff", "--name-only", data["commit"], "--", *rels)
-        return None if out is None else out.splitlines()
-    return None
+class Sources:
+    """Where each stop's code is shown from: the file on disk, or `git show` of
+    the commit the tour was written against, passed to walkthrough.show() as
+    {rev, top, rel}.
+
+    For a diff tour every stop gets the right-hand commit. Diffview shows the
+    diff's own files at that commit already, and walkthrough.lua ignores the
+    source for those; a stop elsewhere would otherwise open the file from disk,
+    which is a third version whenever the checkout is neither side. For an
+    ordinary tour (only ever a replay: a live one is about the files on disk)
+    a file comes from git only when the copy on disk differs, so that a replay
+    of unchanged code opens the real file, with its language server.
+    """
+
+    def __init__(self, root: str, rev: str | None, always: bool) -> None:
+        self.root = root
+        self.top = git(root, "rev-parse", "--show-toplevel") if rev else None
+        self.rev = rev
+        self.always = always
+        self.known: dict[str, dict | None] = {}
+
+    def get(self, file: str) -> dict | None:
+        if file not in self.known:
+            self.known[file] = self._find(file)
+        return self.known[file]
+
+    def _find(self, file: str) -> dict | None:
+        if not (self.top and self.rev):
+            return None
+        rel = repo_path(self.top, self.root, file)
+        if rel is None or not git_ok(self.top, "cat-file", "-e", f"{self.rev}:{rel}"):
+            return None
+        if not self.always:
+            path = file if os.path.isabs(file) else os.path.join(self.root, file)
+            if os.path.exists(path) and git_ok(self.top, "diff", "--quiet", self.rev, "--", rel):
+                return None
+        return {"rev": self.rev, "top": self.top, "rel": rel}
 
 
 class Tour:
@@ -458,6 +560,10 @@ class Tour:
         self.nvim = nvim
         # Where the tour is being saved; None for a replay, or if saving failed.
         self.file: TourFile | None = None
+        # The listener's Claude has been told the tour is not being saved.
+        self.unsaved_reported = False
+        # Where each stop's code comes from (see Sources); by default the disk.
+        self.sources = Sources(root, None, False)
         # The clip whose text the subtitle shows, so two players reporting the
         # same start do not redraw it twice.
         self.subtitled: int | None = None
@@ -629,8 +735,14 @@ class Narrator:
 
     # -- tours ---------------------------------------------------------------
 
-    async def open_tour(self, project_root: str, title: str) -> str | None:
-        """Replace any tour with an empty one; returns the Neovim socket found."""
+    async def open_tour(self, project_root: str, title: str, nvim_socket: str | None = None) -> str | None:
+        """Replace any tour with an empty one; returns the Neovim socket used.
+
+        `nvim_socket` is the Neovim that asked for the tour, when one did
+        (`narrator replay --nvim`): that one rather than whichever Neovim
+        NvimLink.find picks for the project, which is the newest when two are
+        open there. NvimLink falls back to find() if it goes away.
+        """
         for task in self.tasks:
             task.cancel()
         self.tasks = []
@@ -639,7 +751,7 @@ class Narrator:
             await self.tour.nvim.close()
         self.pinned.clear()
         self.broadcast({"type": "flush"})
-        path = await asyncio.to_thread(NvimLink.find, project_root)
+        path = nvim_socket or await asyncio.to_thread(NvimLink.find, project_root)
         self.tour = Tour(title, project_root, NvimLink(project_root, path) if path else None)
         self.tasks = [asyncio.create_task(self.synth_worker(self.tour)), asyncio.create_task(self.drive(self.tour))]
         self.announce()
@@ -654,13 +766,43 @@ class Narrator:
             "the narration still plays. Ask the user to open nvim in the project if they want it."
         )
 
+    def unsaved_note(self, t: Tour) -> str | None:
+        """Said to Claude once, the first time the tour turns out unsaveable."""
+        if t.file is None or t.file.unsaved is None or t.unsaved_reported:
+            return None
+        t.unsaved_reported = True
+        return (
+            f"This tour is not being saved: {t.file.unsaved}. A saved tour must point at code "
+            "git can give back (committed files, or a diff between two commits), or a replay "
+            "could not show what was narrated. It plays as usual; carry on."
+        )
+
     async def tour_start(self, project_root: str, title: str, basis: str | None) -> str:
         path = await self.open_tour(project_root, title)
         t = self.tour
         notes = [f"Tour {title!r} started.", self.nvim_note(path)]
+        # Whether the tour is of a Diffview diff, and between what, is known
+        # only to Neovim (walkthrough.lua's diff mode, set by `:Walkthrough`
+        # in a Diffview tab). Asked rather than left to Claude to pass on,
+        # which it would have to copy exactly.
+        diff = None
+        if t.nvim:
+            try:
+                diff = await t.nvim.lua("return require('walkthrough').diff_info()")
+            except Exception as e:  # noqa: BLE001 -- treated as an ordinary tour
+                log.warning("asking Neovim about a diff failed: %s", e)
         try:
-            t.file = await asyncio.to_thread(TourFile, title, project_root, basis)
-            notes.append(f"It is saved under {t.file.dir} as you add stops.")
+            t.file = await asyncio.to_thread(
+                TourFile, title, project_root, basis, diff if isinstance(diff, dict) else None
+            )
+            if t.file.diff:
+                # Stops outside the diff's files are shown at its right-hand
+                # commit too, not from a checkout that may be neither side.
+                t.sources = Sources(project_root, t.file.diff["right"], True)
+            if note := self.unsaved_note(t):
+                notes.append(note)
+            else:
+                notes.append(f"It is saved under {t.file.dir} as you add stops.")
         except Exception as e:  # noqa: BLE001 -- an unsaved tour still plays
             log.warning("cannot save tour %r: %s", title, e)
         if not self.players:
@@ -668,14 +810,17 @@ class Narrator:
         notes.append("Add the first stops now with tour_add, so playback can begin.")
         return " ".join(notes)
 
-    async def tour_replay(self, path: str, project_root: str | None) -> str:
+    async def replay(self, path: str, project_root: str | None, nvim_socket: str | None = None) -> dict:
+        """Play a saved tour, replacing any tour. Raises ValueError for a file
+        that cannot be replayed. Returned as data, which `tour_replay` words
+        for Claude and `narrator replay` prints as JSON for Neovim."""
         try:
             data = json.loads(Path(path).read_text())
             specs = [StopSpec(**s) for s in data["stops"]]
         except (OSError, ValueError, KeyError, TypeError) as e:
-            return f"Cannot replay {path}: {e}"
+            raise ValueError(f"cannot replay {path}: {e}") from e
         if not specs:
-            return f"{path} has no stops."
+            raise ValueError(f"{path} has no stops")
         # The project may have moved since (another container, another mount
         # point). The tours directory sits in the project root, so its parent
         # is the next best guess.
@@ -683,22 +828,80 @@ class Narrator:
         if not os.path.isdir(root):
             root = str(Path(path).resolve().parent.parent)
         title = data.get("title") or Path(path).stem
-        nvim = await self.open_tour(root, title)
+        warnings: list[str] = []
+        files = list(dict.fromkeys(s.file for s in specs))
+
+        def sources() -> tuple[Sources, dict | None]:
+            diff = data.get("diff")
+            if isinstance(diff, dict):
+                left, right = commit_of(root, diff.get("left")), commit_of(root, diff.get("right"))
+                if left and right:
+                    return Sources(root, right, True), {**diff, "left": left, "right": right}
+                warnings.append(
+                    "It is a tour of a diff whose commits this repository does not have, so the "
+                    "files are shown as they are on disk and the highlights may be off."
+                )
+                return Sources(root, None, False), None
+            commit = commit_of(root, data.get("commit"))
+            if not commit:
+                warnings.append(
+                    f"Its commit {data['commit']} is not in this repository"
+                    if data.get("commit") else "It records no commit"
+                )
+                warnings[-1] += ", so the files are shown as they are on disk and the highlights may be off."
+                return Sources(root, None, False), None
+            # Saved before tours had to be committed: files changed then are
+            # not in any commit, and git can only show them as committed.
+            dirty = set(data.get("dirty") or [])
+            if dirty_files := [f for f in files if f in dirty]:
+                warnings.append(
+                    "It was written while these files had uncommitted changes, so their "
+                    f"highlights may be off: {', '.join(dirty_files)}."
+                )
+            src = Sources(root, commit, False)
+            for f in files:
+                src.get(f)
+            return src, None
+
+        src, diff = await asyncio.to_thread(sources)
+        nvim = await self.open_tour(root, title, nvim_socket)
         t = self.tour
+        t.sources = src
         t.stops = [Stop(i, spec) for i, spec in enumerate(specs)]
         t.complete = True
         self.announce()
-        notes = [f"Replaying {title!r}, {len(specs)} stops, from {root}.", self.nvim_note(nvim)]
-        if data.get("complete") is False:
+        return {
+            "title": title,
+            "stops": len(specs),
+            "root": root,
+            "nvim": nvim,
+            "complete": data.get("complete") is not False,
+            "diff": diff,
+            "commit": src.rev,
+            # Files whose copy on disk differs, shown from git instead. For a
+            # diff, every file is shown at its right-hand commit anyway.
+            "from_git": [] if diff else [f for f in files if src.known.get(f)],
+            "warnings": warnings,
+            "players": len(self.players),
+        }
+
+    async def tour_replay(self, path: str, project_root: str | None) -> str:
+        try:
+            r = await self.replay(path, project_root)
+        except ValueError as e:
+            return f"Cannot replay: {e}."
+        notes = [f"Replaying {r['title']!r}, {r['stops']} stops, from {r['root']}.", self.nvim_note(r["nvim"])]
+        if r["diff"]:
+            notes.append(f"It is a tour of the diff {r['diff']['left'][:12]}..{r['diff']['right'][:12]}.")
+        if not r["complete"]:
             notes.append("It was saved before Claude finished writing it, so it may end abruptly.")
-        changed = await asyncio.to_thread(tour_drift, data, root)
-        if changed:
+        if r["from_git"]:
             notes.append(
-                "These files have changed since the tour was saved, so their highlights may "
-                f"be off by a few lines: {', '.join(changed)}."
+                "These files have changed on disk since, so the listener sees them as they were, "
+                f"from commit {r['commit'][:12]}: {', '.join(r['from_git'])}. Read them with "
+                "`git show` at that commit before answering questions about them."
             )
-        elif changed is None:
-            notes.append("There is no record of the code it was written for, so it cannot tell whether the files have changed.")
+        notes += r["warnings"]
         if not self.players:
             notes.append(NO_PLAYER + " Playback waits for it.")
         notes.append("Call tour_wait to follow it.")
@@ -724,6 +927,8 @@ class Narrator:
             except Exception as e:  # noqa: BLE001
                 log.warning("saving tour %r failed: %s", t.title, e)
                 report += f" (Saving the tour to {t.file.dir} failed: {e}; playback is unaffected.)"
+            if note := self.unsaved_note(t):
+                report += " " + note
         return report
 
     def tour_report(self, t: Tour) -> str:
@@ -812,8 +1017,9 @@ class Narrator:
         s = stop.spec
         path = s.file if os.path.isabs(s.file) else os.path.join(t.root, s.file)
         try:
+            source = await asyncio.to_thread(t.sources.get, s.file)
             await t.nvim.lua(
-                "return require('walkthrough').show(...)", path, s.first, s.last, s.label
+                "return require('walkthrough').show(...)", path, s.first, s.last, s.label, source
             )
         except Exception as e:  # noqa: BLE001 -- a lost highlight must not stop the tour
             log.warning("highlight failed for stop %d: %s", stop.index + 1, e)
@@ -1012,10 +1218,12 @@ def build_app(narrator: Narrator, token: str) -> ASGIApp:
         `project_root` is your working directory (absolute); stop paths are
         relative to it, and it is how the narrator finds the user's Neovim to
         move the highlight. The tour is saved under .tours/ in the project as
-        stops are added, with the current commit recorded; `basis` says what
-        the line numbers refer to when that is not simply the checked-out
-        commit, e.g. "uncommitted changes to the parser" or "the diff from
-        main to feature-x". Follow with tour_add.
+        stops are added, against the checked-out commit, or for a tour of a
+        Diffview diff (which the narrator learns from Neovim) against the
+        diff's two commits. A tour that narrates uncommitted changes plays
+        but is not saved, and the reply says so. `basis` is an optional
+        sentence on what the tour covers, kept in the saved file. Follow
+        with tour_add.
         """
         return await narrator.tour_start(project_root, title, basis)
 
@@ -1037,8 +1245,9 @@ def build_app(narrator: Narrator, token: str) -> ASGIApp:
 
         `path` is absolute. `project_root` overrides the one in the file, for a
         project that has moved; by default the file's, else the directory
-        above .tours/. The reply says whether the narrated files have changed
-        since. Follow with tour_wait, as for a tour you wrote.
+        above .tours/. Files that have changed on disk since are shown to the
+        listener as they were, from git, and the reply names them. Follow
+        with tour_wait, as for a tour you wrote.
         """
         return await narrator.tour_replay(path, project_root)
 

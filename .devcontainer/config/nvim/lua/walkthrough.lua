@@ -14,7 +14,9 @@
 -- Run from a `:DiffviewOpen` tab it stays in that tab instead and tours the
 -- diff (diff mode, below).
 -- `:WalkthroughReplay` does the same for a tour the narrator saved earlier
--- under .tours/, which Claude then only has to hand back to the narrator. The
+-- under .tours/, which Claude then only has to hand back to the narrator; a
+-- tour of a diff reopens that diff, and files changed since are shown as the
+-- tour's commit has them, from git (show()'s `source`). The
 -- narrator (the MCP server that speaks, and its browser player) is described
 -- in README.md under "Narrated walkthroughs"; without it the same walkthrough
 -- works with the narration written in Claude's chat instead.
@@ -64,8 +66,10 @@ local function is_code_window(win)
   if not vim.api.nvim_win_is_valid(win) then return false end
   if vim.api.nvim_win_get_config(win).relative ~= "" then return false end
   -- buftype "" is an ordinary file buffer: not a terminal (possibly the one
-  -- Claude is running in), not neo-tree, not help, not a quickfix list.
-  return vim.bo[vim.api.nvim_win_get_buf(win)].buftype == ""
+  -- Claude is running in), not neo-tree, not help, not a quickfix list. A
+  -- file shown from git (source_buffer) is code too.
+  local buf = vim.api.nvim_win_get_buf(win)
+  return vim.bo[buf].buftype == "" or vim.b[buf].walkthrough_source ~= nil
 end
 
 -- The Diffview tab's view in diff mode, while that view is still open. A
@@ -195,17 +199,65 @@ local function mark(win, first, last, label)
   return first, last
 end
 
--- Edit `abs` into `win` unless it already shows it.
-local function edit_into(win, abs)
+-- The narrator passes a `source` ({rev, top, rel}) when a stop's code is to
+-- come from git rather than disk: a replay of a tour whose files have changed
+-- since, or a stop outside the diff in a tour of a diff between commits. nil
+-- arrives as vim.NIL when it comes over RPC.
+local function no_source(source)
+  return source == nil or source == vim.NIL
+end
+
+-- A read-only buffer holding `git show <rev>:<rel>`, named after both, made
+-- once and kept for later stops in the same file. Not a file on disk, so
+-- nothing can write it back over the current version by mistake, and the
+-- language server leaves it alone; the filetype still gives it treesitter
+-- highlighting.
+local function source_buffer(source)
+  local name = string.format("walkthrough://%s/%s", source.rev:sub(1, 12), source.rel)
+  for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+    if vim.api.nvim_buf_get_name(buf) == name and vim.api.nvim_buf_is_loaded(buf) then
+      return buf, name
+    end
+  end
+  local r = vim.system({ "git", "-C", source.top, "show", source.rev .. ":" .. source.rel },
+    { text = true }):wait()
+  if r.code ~= 0 then
+    error(string.format("walkthrough: git show %s:%s failed: %s",
+      source.rev:sub(1, 12), source.rel, vim.trim(r.stderr or "")))
+  end
+  local text = r.stdout:gsub("\n$", "")
+  local buf = vim.api.nvim_create_buf(true, true)
+  vim.api.nvim_buf_set_name(buf, name)
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, vim.split(text, "\n", { plain = true }))
+  vim.bo[buf].bufhidden = "hide"
+  vim.bo[buf].modifiable = false
+  vim.bo[buf].readonly = true
+  vim.b[buf].walkthrough_source = source.rev
+  local ft = vim.filetype.match({ buf = buf, filename = source.rel })
+  if ft then vim.bo[buf].filetype = ft end
+  return buf, name
+end
+
+-- Edit `abs` into `win` unless it already shows it, or with a `source`, put
+-- the file as git has it there instead. Returns the name to report.
+local function edit_into(win, abs, source)
+  if not no_source(source) then
+    local buf, name = source_buffer(source)
+    if vim.api.nvim_win_get_buf(win) ~= buf then
+      vim.api.nvim_win_set_buf(win, buf)
+    end
+    return name
+  end
   vim.api.nvim_win_call(win, function()
     if vim.fn.fnamemodify(vim.api.nvim_buf_get_name(0), ":p") ~= abs then
       vim.cmd.edit(vim.fn.fnameescape(abs))
     end
   end)
+  return vim.fn.fnamemodify(abs, ":~:.")
 end
 
-local function showing(abs, first, last)
-  return string.format("showing %s:%d-%d", vim.fn.fnamemodify(abs, ":~:."), first, last)
+local function showing(name, first, last)
+  return string.format("showing %s:%d-%d", name, first, last)
 end
 
 -- The diff's entry for `abs`, matched on its path at the right-hand side's
@@ -256,21 +308,24 @@ local function peek_window(view, abs)
   return peek
 end
 
-local function show_in_diff(view, path, abs, first, last, label)
+-- A stop outside the diff comes with a `source` (the right-hand commit) in a
+-- tour of a diff between commits, so the float shows that version even when
+-- the checkout is neither side.
+local function show_in_diff(view, path, abs, first, last, label, source)
   local entry = diff_entry(view, abs)
   if not entry then
-    if vim.fn.filereadable(abs) == 0 then
+    if no_source(source) and vim.fn.filereadable(abs) == 0 then
       error("walkthrough: no such file: " .. path)
     end
     pending = nil
     local win = peek_window(view, abs)
     if not win then error("walkthrough: the Diffview tab has no diff window") end
-    edit_into(win, abs)
-    return showing(abs, mark(win, first, last, label))
+    local name = edit_into(win, abs, source)
+    return showing(name, mark(win, first, last, label))
   end
   close_peek()
   if vim.api.nvim_get_current_tabpage() ~= diff.tab then
-    pending = { path, first, last, label }
+    pending = { path, first, last, label, source }
     return string.format("%s:%d-%d will be shown when the Diffview tab is on screen",
       vim.fn.fnamemodify(abs, ":~:."), first, last)
   end
@@ -296,24 +351,26 @@ end
 --- Show lines `first`..`last` (1-based, inclusive) of `path`, highlighted, with
 --- an optional `label` above them. Clears the previous stop's highlight.
 --- `path` is relative to Neovim's working directory, or absolute. In diff mode
---- the lines are those of the diff's right-hand side.
-function M.show(path, first, last, label)
+--- the lines are those of the diff's right-hand side. With `source`
+--- ({rev, top, rel}, from the narrator) the file is shown as commit `rev` has
+--- it rather than from disk.
+function M.show(path, first, last, label, source)
   clear_marks()
   close_subtitle()
   local abs = vim.fn.fnamemodify(path, ":p")
   local view = diff_view()
   if view then
-    return show_in_diff(view, path, abs, first, last, label)
+    return show_in_diff(view, path, abs, first, last, label, source)
   end
   local win = code_window()
   last_win = win
-  if vim.fn.filereadable(abs) == 0 then
+  if no_source(source) and vim.fn.filereadable(abs) == 0 then
     error("walkthrough: no such file: " .. path)
   end
-  edit_into(win, abs)
+  local name = edit_into(win, abs, source)
   first, last = mark(win, first, last, label)
-  reveal_in_tree(win, abs)
-  return showing(abs, first, last)
+  if vim.fn.filereadable(abs) == 1 then reveal_in_tree(win, abs) end
+  return showing(name, first, last)
 end
 
 --- Show `text` as a subtitle in a float along the bottom of the code window,
@@ -371,6 +428,26 @@ function M.subtitle(text)
   return "subtitle shown"
 end
 
+--- What diff mode is touring, for the narrator to record with a saved tour:
+--- nil outside diff mode, else each side as a full commit hash, "worktree" or
+--- "index", and the diff's path arguments.
+function M.diff_info()
+  local view = diff_view()
+  if not view then return nil end
+  local RevType = require("diffview.vcs.rev").RevType
+  local function side(rev)
+    if rev.type == RevType.COMMIT and rev.commit then return rev.commit end
+    if rev.type == RevType.STAGE then return "index" end
+    return "worktree"
+  end
+  return {
+    left = side(view.left),
+    right = side(view.right),
+    paths = view.path_args or {},
+    rev_arg = view.rev_arg,
+  }
+end
+
 --- Remove the walkthrough highlight from every buffer, the subtitle, and in
 --- diff mode the float for stops outside the diff.
 function M.clear()
@@ -389,11 +466,13 @@ end
 -- Without the narrator, Claude moves the highlight itself through nvim-mcp
 -- and writes the narration in chat.
 --
--- `basis` is asked for because the narrator saves every tour under .tours/ to
--- be replayed later, and the line numbers only mean something against the
--- code they were written for. The narrator records the commit and which files
--- were modified on its own; what it cannot know is that the tour was about a
--- diff, a branch not checked out, or uncommitted work.
+-- The narrator saves a tour under .tours/ only when git can give back the code
+-- it narrates: files committed and unchanged at HEAD, or a diff between two
+-- commits. For an ordinary tour only Claude knows which files it will
+-- narrate, so it is asked to check them and to ask before narrating
+-- uncommitted work, so that the listener knows the tour will not be kept. In
+-- diff mode `M.command` asks instead, before Claude starts, as the sides of
+-- the diff say it all; `context` is then given, and the step is left out.
 --
 -- `context`, if given, is a paragraph placed after the first line: in diff
 -- mode, what the diff is (diff_context). `first_step`, if given, replaces
@@ -406,19 +485,33 @@ local function prompt(topic, context, first_step)
   if context then
     vim.list_extend(lines, { context, "" })
   end
-  return table.concat(vim.list_extend(lines, {
+  local steps = {
+    first_step or "Skim enough to outline 4 to 12 stops that tell the story of how it works, in order. Post the outline as one short list. Do not read everything first: playback should start soon.",
+  }
+  if not context then
+    table.insert(steps, "Run `git status --porcelain --` with the files your stops will be in. If any of them is untracked or has uncommitted changes, name them, tell me the walkthrough involves uncommitted work and so the narrator will not save it for replay, and wait until I say to go ahead. Uncommitted changes in other files do not matter.")
+  end
+  vim.list_extend(steps, {
+    "Call narrator `status`. If no player is connected, ask me to open the address that `./dev narrator-url` prints on the host, and wait until I say it is open.",
+    "Call `tour_start` with project_root set to your working directory, a short title, and optionally `basis`, one sentence on what the tour covers. The narrator saves the tour under .tours/ by itself, when the code it narrates is committed; do not save it yourself.",
+    "Write the first one or two stops and send them with `tour_add` at once; it returns immediately and they start playing. Then read on and keep adding stops one to three at a time, staying ahead of me. Each stop is a file path relative to project_root, first and last line (1-based, inclusive), a label of a few words, and one to four sentences of text.",
+    "Write the text for the ear: no markdown, no symbols spelt out, say \"the setup function\" rather than reading identifiers character by character. Explain why as well as what.",
+    "Mark the final batch with last=true, then call `tour_wait`.",
+    "If any reply says I pressed Stop, stop adding and ask me what I would like. Answer in chat or with `speak`; to carry on, `tour_resume` then `tour_wait`. When the tour finishes, offer to go deeper on any stop.",
+  })
+  vim.list_extend(lines, {
     "Use the `narrator` MCP server's tour tools; it speaks in my browser player and highlights each stop in my Neovim as it plays.",
     "",
-    first_step or "1. Skim enough to outline 4 to 12 stops that tell the story of how it works, in order. Post the outline as one short list. Do not read everything first: playback should start soon.",
-    "2. Call narrator `status`. If no player is connected, ask me to open the address that `./dev narrator-url` prints on the host, and wait until I say it is open.",
-    "3. Call `tour_start` with project_root set to your working directory, a short title, and, if the line numbers do not simply refer to the checked-out commit, `basis` saying what they refer to (uncommitted changes, a diff between two revisions, and so on). The narrator saves the tour under .tours/ by itself; do not save it yourself.",
-    "4. Write the first one or two stops and send them with `tour_add` at once; it returns immediately and they start playing. Then read on and keep adding stops one to three at a time, staying ahead of me. Each stop is a file path relative to project_root, first and last line (1-based, inclusive), a label of a few words, and one to four sentences of text.",
-    "5. Write the text for the ear: no markdown, no symbols spelt out, say \"the setup function\" rather than reading identifiers character by character. Explain why as well as what.",
-    "6. Mark the final batch with last=true, then call `tour_wait`.",
-    "7. If any reply says I pressed Stop, stop adding and ask me what I would like. Answer in chat or with `speak`; to carry on, `tour_resume` then `tour_wait`. When the tour finishes, offer to go deeper on any stop.",
+  })
+  for i, step in ipairs(steps) do
+    -- deep_step comes numbered, from when the steps were a fixed list.
+    table.insert(lines, i .. ". " .. (step:gsub("^%d+%. ", "")))
+  end
+  vim.list_extend(lines, {
     "",
     "If the narrator tools are unavailable, use the `nvim` MCP server (nvim-mcp) instead: for each stop run `return require('walkthrough').show('<path>', <first>, <last>, '<label>')` with `exec_lua` and write the narration in chat; if it reports no connection, use `get_targets` and `connect` first. Finish with `return require('walkthrough').clear()`.",
-  }), "\n")
+  })
+  return table.concat(lines, "\n")
 end
 
 -- What `:WalkthroughReplay` asks of Claude: one tool call, since the narrator
@@ -429,8 +522,8 @@ local function replay_prompt(file)
     "Replay the saved narrated walkthrough " .. file .. ".",
     "",
     "1. Call narrator `status`. If no player is connected, ask me to open the address that `./dev narrator-url` prints on the host, and wait until I say it is open.",
-    "2. Call narrator `tour_replay` with path set to " .. vim.fn.fnamemodify(file, ":p") .. ", then `tour_wait`. If its reply says files have changed since the tour was saved, tell me which, briefly, but carry on.",
-    "3. If a reply says I pressed Stop, ask me what I would like. Answer in chat or with `speak`; to carry on, `tour_resume` then `tour_wait`. Read the code a stop points at before answering questions about it.",
+    "2. Call narrator `tour_replay` with path set to " .. vim.fn.fnamemodify(file, ":p") .. ", then `tour_wait`. If its reply says files are shown from git because they have changed since, tell me which, briefly, but carry on.",
+    "3. If a reply says I pressed Stop, ask me what I would like. Answer in chat or with `speak`; to carry on, `tour_resume` then `tour_wait`. Read the code a stop points at before answering questions about it, as the tour's commit has it (`git show <commit>:<path>`) when the reply said it is shown from git, or for a diff tour at its right-hand commit.",
     "",
     "If the narrator tools are unavailable, read the file yourself and use the `nvim` MCP server (nvim-mcp) instead: for each stop run `return require('walkthrough').show('<path>', <first>, <last>, '<label>')` with `exec_lua` and write its text in chat; if it reports no connection, use `get_targets` and `connect` first. Finish with `return require('walkthrough').clear()`.",
   }, "\n")
@@ -453,7 +546,7 @@ end
 
 -- A tab of its own, laid out like `nvim .`: the tree on the left and a code
 -- window beside it, which show() drives, and Claude across the full width
--- underneath. A tab rather than splits in the current one, so the tour neither
+-- underneath (no Claude for an offline replay, with `argv` nil). A tab rather than splits in the current one, so the tour neither
 -- squeezes nor takes over the windows you were working in, and `:tabclose`
 -- puts everything back. The tree goes in before Claude's split: neo-tree opens
 -- on the left at full height, so made the other way round it would cut
@@ -469,7 +562,7 @@ local function open_tab(file, argv)
     vim.api.nvim_set_current_win(code)
   end
   last_win = code
-  open_terminal(argv)
+  if argv then open_terminal(argv) end
   if file ~= "" then
     reveal_in_tree(code, vim.fn.fnamemodify(file, ":p"))
   end
@@ -636,6 +729,16 @@ function M.command(opts)
       vim.log.levels.WARN)
   end
   if view then
+    -- A diff with the working tree or the index on either side is of work
+    -- git cannot give back later, so the narrator will not save the tour.
+    -- Said before Claude starts, rather than discovered afterwards.
+    local RevType = require("diffview.vcs.rev").RevType
+    if view.left.type ~= RevType.COMMIT or view.right.type ~= RevType.COMMIT then
+      local choice = vim.fn.confirm(
+        "This diff includes uncommitted changes, so the walkthrough will not be saved for replay. Continue?",
+        "&Yes\n&No", 2)
+      if choice ~= 1 then return end
+    end
     set_diff(view)
     local topic
     if opts.args ~= "" then
@@ -677,31 +780,100 @@ local function saved_tours()
   return files
 end
 
--- `:WalkthroughReplay [file]`: a tour saved under .tours/, by default the
--- newest one.
-function M.replay(opts)
-  if not have_claude() then return end
+-- The tour file `file` decoded, or nil and an error message.
+local function read_tour(file)
+  local ok, data = pcall(function()
+    return vim.json.decode(table.concat(vim.fn.readfile(file), "\n"), { luanil = { object = true } })
+  end)
+  if not ok or type(data) ~= "table" or type(data.stops) ~= "table" then
+    return nil, "not a saved tour: " .. file
+  end
+  return data
+end
+
+-- The current tab's Diffview view if it shows commits `left`..`right`.
+local function diff_between(left, right)
+  local view = current_diff_view()
+  if view and view.left.commit == left and view.right.commit == right then return view end
+  return nil
+end
+
+-- Set up the screen for replaying `data`, with Claude's terminal running
+-- `argv` across the bottom, or none for an offline replay. A tour of a diff
+-- between two commits opens that diff in Diffview, as it was toured, rather
+-- than whatever diff tab is on screen; any other tour gets a tab of its own
+-- (open_tab). Calls `ready(view)` once the stops can be shown, which for a
+-- diff is once Diffview has listed its files: until then a stop in one of
+-- them would not find its entry and would open in the float instead.
+local function prepare_replay(data, argv, ready)
+  local d = data.diff
+  if type(d) ~= "table" or type(d.left) ~= "string" or type(d.right) ~= "string" then
+    set_diff(nil)
+    open_tab("", argv)
+    return ready(nil)
+  end
+  local view = diff_between(d.left, d.right)
+  if not view then
+    local cmd = { "DiffviewOpen" }
+    if type(data.project_root) == "string" and vim.fn.isdirectory(data.project_root) == 1 then
+      table.insert(cmd, "-C" .. vim.fn.fnameescape(data.project_root))
+    end
+    table.insert(cmd, d.left .. ".." .. d.right)
+    if type(d.paths) == "table" and #d.paths > 0 then
+      table.insert(cmd, "--")
+      for _, p in ipairs(d.paths) do table.insert(cmd, vim.fn.fnameescape(p)) end
+    end
+    local ok, err = pcall(vim.cmd, table.concat(cmd, " "))
+    view = ok and current_diff_view() or nil
+    if not view then
+      vim.notify("Walkthrough: could not open the tour's diff (" .. (err or table.concat(cmd, " ")) .. ")",
+        vim.log.levels.ERROR)
+      return
+    end
+  end
+  set_diff(view)
+  if argv then open_terminal(argv) end
+  local deadline = vim.uv.now() + 10000
+  local function poll()
+    local listed = pcall(function() return view.files:len() > 0 end) and view.files:len() > 0
+    if listed or view.initialized or vim.uv.now() > deadline then
+      return ready(view)
+    end
+    vim.defer_fn(poll, 100)
+  end
+  poll()
+end
+
+-- The tour file `opts.args` names, else the newest under .tours/; nil after
+-- telling the user why there is none.
+local function tour_arg(opts, cmd)
   local file = opts.args
   if file == "" then
     file = saved_tours()[1] or ""
     if file == "" then
-      vim.notify("WalkthroughReplay: no saved tours in .tours/", vim.log.levels.WARN)
-      return
+      vim.notify(cmd .. ": no saved tours in .tours/", vim.log.levels.WARN)
+      return nil
     end
   end
   if vim.fn.filereadable(file) == 0 then
-    vim.notify("WalkthroughReplay: no such file: " .. file, vim.log.levels.ERROR)
-    return
+    vim.notify(cmd .. ": no such file: " .. file, vim.log.levels.ERROR)
+    return nil
   end
-  -- From a Diffview tab, in that tab: a tour saved from a diff has its line
-  -- numbers on the diff's right-hand side, and is best replayed against it.
-  local view = current_diff_view()
-  set_diff(view)
-  if view then
-    open_terminal({ "claude", replay_prompt(file) })
-  else
-    open_tab("", { "claude", replay_prompt(file) })
+  local data, err = read_tour(file)
+  if not data then
+    vim.notify(cmd .. ": " .. err, vim.log.levels.ERROR)
+    return nil
   end
+  return vim.fn.fnamemodify(file, ":p"), data
+end
+
+-- `:WalkthroughReplay [file]`: a tour saved under .tours/, by default the
+-- newest one, with Claude there for questions.
+function M.replay(opts)
+  if not have_claude() then return end
+  local file, data = tour_arg(opts, "WalkthroughReplay")
+  if not file then return end
+  prepare_replay(data, { "claude", replay_prompt(file) }, function() end)
 end
 
 function M.setup()
@@ -715,7 +887,7 @@ function M.setup()
       vim.schedule(function()
         local p = pending
         if p and diff and diff.tab == vim.api.nvim_get_current_tabpage() then
-          pcall(M.show, unpack(p, 1, 4))
+          pcall(M.show, unpack(p, 1, 5))
         end
       end)
     end,

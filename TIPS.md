@@ -1123,8 +1123,7 @@ tab, and each stop selects its file in the diff and highlights the new lines,
 the old ones beside them. A stop in a file the diff does not touch opens in a
 float over the diff. `:DiffviewClose` closes Claude's pane with the tab, but
 Claude keeps running hidden, so finish with it first, or reach it again with
-`:ls` and `:buffer <n>`. `:WalkthroughReplay` from a Diffview tab replays there too,
-which suits a tour saved from that diff.
+`:ls` and `:buffer <n>`.
 
 A diff tour starts quickly because Claude only skims, so it mostly explains
 the hunks it can see. `:Walkthrough!` makes it read first: the README and
@@ -1132,11 +1131,16 @@ each changed file as they were before the change, and the code those changes cal
 from, on the same side. The narration then covers how it worked before and
 what the change does to that. Expect to wait longer for the first stop.
 
-The narrator saves every tour to `.tours/` in the project as Claude writes
-it. `:WalkthroughReplay` (Tab completes the files) plays one again in the same
-layout. Claude only hands the file to the narrator, so it starts at once, and
-it is still there for questions when you press Stop. If a narrated file has
-changed since, Claude says which, as its highlights may have drifted.
+The narrator saves each tour to `.tours/` in the project as Claude writes it,
+as long as the code it narrates is committed, or the diff is between two
+commits. Otherwise the tour plays but is not kept, and you are asked first:
+by Neovim for a diff against your working tree, by Claude when the files it
+means to narrate have uncommitted changes. `:WalkthroughReplay` (Tab
+completes the files) plays a saved tour again in the same layout, and a diff
+tour in a Diffview of the same two commits. Claude only hands the file to the
+narrator, so it starts at once, and it is still there for questions when you
+press Stop. A file that has changed since is shown as the tour's commit had
+it, in a read-only `walkthrough://` buffer, so the highlights still fit.
 
 The highlight reaches the Neovim whose working directory is in the same
 project as Claude's, so start `nvim` in the project. If the narrator says it

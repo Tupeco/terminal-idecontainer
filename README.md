@@ -550,18 +550,35 @@ reason.
 
 ### Saved tours
 
-The narrator writes every tour to `.tours/<date>-<title>.json` at the root of
+The narrator writes a tour to `.tours/<date>-<title>.json` at the root of
 the project as the stops arrive, and adds `/.tours/` to `.git/info/exclude`
 unless git already ignores or tracks it. `:WalkthroughReplay [file]` plays one
 again (the narrator's `tour_replay`), without Claude writing anything.
 
-A tour's line numbers belong to the code it was written about, and that need
-not be a commit. The file records `commit` and `branch` at the start, `dirty`
-(what `git status` listed then), `basis` (Claude's note when the tour was
-about uncommitted work, a diff and so on), and `files`, a digest of each
-narrated file as it was. A replay compares the digests and says which files
-have changed since. Tours saved by hand with only `commit` are checked with
-`git diff` against it. `complete` is false for a tour Claude did not finish.
+A tour's line numbers belong to the code it was written about, so a tour is
+saved only when git can give that code back:
+
+- an ordinary tour whose files are all committed and unchanged at HEAD,
+  recorded as `commit` (and `branch`), or
+- a tour of a Diffview diff between two commits, recorded as `diff` (`left`,
+  `right`, the path arguments). The narrator asks Neovim what the diff is.
+
+A tour that narrates uncommitted work still plays, but is not saved, and
+`:Walkthrough` asks before starting one. In a Diffview tab whose diff has
+the working tree or the index on a side, Neovim asks at once. For an ordinary
+tour Claude checks the files it plans to narrate with `git status`, and asks
+if any of them are uncommitted. Uncommitted changes elsewhere in the worktree
+do not matter. Should a stop land in an uncommitted file anyway, the narrator
+deletes what it had saved of the tour and tells Claude.
+
+A replay shows exactly the code the tour was written for, without checking
+anything out. A diff tour reopens the same two commits in Diffview. In an
+ordinary tour, a file that has changed on disk since is shown read-only as
+the tour's commit has it (a `walkthrough://<commit>/<path>` buffer from
+`git show`), and the others open from disk as usual. `basis` is Claude's
+optional sentence on what the tour covers. `complete` is false for a tour
+Claude did not finish. Older tours, and tours saved by hand with only
+`commit`, replay the same way against that commit.
 
 ### How the sound gets out
 
