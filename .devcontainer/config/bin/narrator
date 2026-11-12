@@ -45,7 +45,7 @@ die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 pid() {
   local p
   p="$(cat "$PIDFILE" 2>/dev/null || true)"
-  [ -n "$p" ] && tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null | grep -q 'narrator\.py' \
+  [ -n "$p" ] && { tr '\0' ' ' < "/proc/$p/cmdline"; } 2>/dev/null | grep -q 'narrator\.py' \
     && printf '%s\n' "$p"
 }
 

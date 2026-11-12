@@ -916,6 +916,14 @@ See "Completion offers only words from the file" in TIPS.md.
 
 ## Known caveats
 
+- **Orca's daemon can leave a lock behind across containers.** orcad records
+  its holder in `~/.config/orca/orcad.lock`, a volume, and refuses to start
+  when a lock comes "from another machine" whose holder it cannot check
+  (`orcad_instance_lock_holder_unverifiable`), which is what an earlier
+  container of the same project looks like to it. `orca-server start`
+  removes such a lock unless its pid is a live Orca process in this
+  container, since that volume is never shared with another machine.
+
 - **Helix debugging is experimental upstream.** The DAP blocks in
   `languages.toml` are provided but the feature is rough; use Neovim for
   serious debugging.

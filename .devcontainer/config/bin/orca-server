@@ -75,6 +75,35 @@ usage() {
   sed -n '2,/^set -euo/p' "$0" | sed 's/^# \{0,1\}//; $d'
 }
 
+# Orca's daemon (orcad) records its holder in ~/.config/orca/orcad.lock, and
+# refuses to start while the lock names a process it cannot check. A lock left
+# by an earlier container of this project is just such a lock: after the
+# container was recreated, `./dev up` failed with
+#
+#   orcad: failed to start: ... [OrcadInstanceLockError]: Another orcad
+#   (pid 202, started ...) holds the data root /home/dev/.config/orca from
+#   another machine. Orca cannot check from here whether it is still
+#   running, because this data root may be shared with other machines.
+#   (code: 'orcad_instance_lock_holder_unverifiable')
+#
+# Orca is careful because a data root may be shared between machines. This one
+# never is: ~/.config/orca is this project's own Docker volume, mounted into
+# this one container. So a holder that is not a live Orca process in here is
+# gone, and its lock can go too. One that is (an orca-ide or orcad started
+# outside the tmux session) is left alone, for Orca to complain about as it
+# should. Orca's own remedy, `orcad-server.js --reclaim-stale-lock`, has to run
+# "on the machine it ran on", which is the container that no longer exists.
+clear_stale_lock() {
+  local lock="$HOME/.config/orca/orcad.lock" pid
+  [ -f "$lock" ] || return 0
+  pid="$(grep -o '"pid": *[0-9]*' "$lock" | grep -o '[0-9]*$' || true)"
+  if [ -n "$pid" ] && { tr '\0' ' ' < "/proc/$pid/cmdline"; } 2>/dev/null | grep -qi 'orca'; then
+    return 0
+  fi
+  rm -f "$lock"
+  echo "Removed a stale $lock (pid ${pid:-unknown} is not running in this container)"
+}
+
 cmd_start() {
   local addr="${1:-}" quiet="${2:-}"
   if running; then
@@ -140,6 +169,8 @@ cmd_start() {
       fi
     done
   fi
+
+  clear_stale_lock
 
   local args=(serve --port "$PORT")
   [ -n "$addr" ] && args+=(--pairing-address "$addr")
