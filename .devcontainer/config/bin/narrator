@@ -8,6 +8,13 @@
 #   narrator log       follow its log
 #   narrator url-path  the player's path and token, which `./dev narrator-url`
 #                      on the host puts after this machine's address
+#   narrator replay <file> [--nvim <socket>] [--root <dir>]
+#                      play a tour saved under .tours/ with no Claude involved,
+#                      highlighting in the Neovim at <socket> (else the one
+#                      found for the project); prints the narrator's reply as
+#                      JSON. `:WalkthroughReplayOffline` runs this.
+#   narrator control prev|next|stop|continue
+#                      the player's buttons, from a shell or from Neovim
 #
 # The server itself is /opt/narrator/app/narrator.py; its docstring says why it
 # is shaped the way it is. Claude Code reaches it at http://127.0.0.1:6769/mcp,
@@ -18,13 +25,14 @@
 # everything worth knowing.
 set -euo pipefail
 
-# Overridable only so the script can be tried against a scratch install.
+# Overridable only so the script can be tried against a scratch install,
+# beside the real one (another port, and XDG_STATE_HOME for its own token).
 APP="${NARRATOR_HOME:-/opt/narrator}"
 STATE="${XDG_STATE_HOME:-$HOME/.local/state}"
 LOG="$STATE/narrator.log"
 PIDFILE="$STATE/narrator.pid"
 TOKEN_FILE="$STATE/narrator-token"
-PORT=6769
+PORT="${NARRATOR_PORT:-6769}"
 
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
@@ -96,17 +104,70 @@ cmd_status() {
   fi
 }
 
+token() {
+  [ -s "$TOKEN_FILE" ] || die "no token yet: the narrator has not been started. Run: narrator start"
+  tr -d '\n' < "$TOKEN_FILE"
+}
+
+# POST a JSON body to one of the narrator's routes and print its JSON reply.
+# --fail-with-body so that a refusal still prints the narrator's reason.
+post() {
+  local t
+  t="$(token)"
+  curl -sS --fail-with-body -X POST -H 'Content-Type: application/json' \
+    --data-binary "$2" "http://127.0.0.1:$PORT/$1?token=$t"
+}
+
+cmd_replay() {
+  local file="" nvim="" root="" body
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --nvim) nvim="${2:-}"; shift 2 || die "--nvim needs a socket path" ;;
+      --root) root="${2:-}"; shift 2 || die "--root needs a directory" ;;
+      -*) die "unknown option $1" ;;
+      *) [ -z "$file" ] || die "one tour at a time"; file="$1"; shift ;;
+    esac
+  done
+  [ -n "$file" ] || die "usage: narrator replay <file> [--nvim <socket>] [--root <dir>]"
+  [ -f "$file" ] || die "no such file: $file"
+  # The server resolves paths against its own working directory, not ours.
+  file="$(realpath "$file")"
+  [ -z "$root" ] || root="$(realpath "$root")"
+  # Started on demand, so that a replay needs nothing but this command. To
+  # stderr, since stdout is the JSON reply that Neovim reads.
+  pid >/dev/null || cmd_start >&2
+  # Built by Python rather than printf, so a quote in a path cannot break it.
+  body="$("$APP/venv/bin/python" -I -c '
+import json, sys
+path, nvim, root = sys.argv[1:]
+print(json.dumps({"path": path, "nvim": nvim or None, "project_root": root or None}))
+' "$file" "$nvim" "$root")"
+  post replay "$body"
+  echo
+}
+
+cmd_control() {
+  case "${1:-}" in
+    prev|next|stop|continue) ;;
+    *) die "usage: narrator control prev|next|stop|continue" ;;
+  esac
+  pid >/dev/null || die "the narrator is not running"
+  post control "{\"action\": \"$1\"}" >/dev/null
+}
+
 case "${1:-}" in
   start) cmd_start ;;
   stop) cmd_stop ;;
   status) cmd_status ;;
   log) exec tail -n 50 -F "$LOG" ;;
+  replay) shift; cmd_replay "$@" ;;
+  control) shift; cmd_control "$@" ;;
   url-path)
-    [ -s "$TOKEN_FILE" ] || die "no token yet: the narrator has not been started. Run: narrator start"
-    printf '/?token=%s\n' "$(tr -d '\n' < "$TOKEN_FILE")"
+    t="$(token)"
+    printf '/?token=%s\n' "$t"
     ;;
   *)
-    sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'
     exit 1
     ;;
 esac

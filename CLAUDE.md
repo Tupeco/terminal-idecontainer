@@ -126,7 +126,7 @@ Several files are parsed by other files, so their format is a contract:
   to back and moves the highlight itself by calling `walkthrough.show()`
   through pynvim on the nvim-mcp plugin's socket, so the signatures of
   `show()` (including its optional `source`, `{rev, top, rel}`, for code
-  shown from git), `subtitle()`, `clear()` and `diff_info()` are a contract
+  shown from git), `subtitle()`, `controls()`, `clear()` and `diff_info()` are a contract
   between `narrator.py` and `walkthrough.lua`. The narrator saves a tour to
   `.tours/` in the project (`TourFile`) only when git can give its code
   back: files committed and unchanged at HEAD, or a Diffview diff between
@@ -134,7 +134,10 @@ Several files are parsed by other files, so their format is a contract:
   unsaved; `:Walkthrough` asks first (Neovim for a diff, Claude for an
   ordinary tour). `tour_replay` reads that format back, including older and
   hand-saved files that have only `commit`, and shows files that changed on
-  disk since from git rather than checking anything out. The step is three
+  disk since from git rather than checking anything out.
+  `:WalkthroughReplayOffline` plays a saved tour with no Claude, through
+  `narrator replay`, which POSTs to `/replay`; like `/mcp`, that route
+  refuses non-loopback clients, and it needs the token too. The step is three
   layers, ordered by how rarely they change: cargo build and venv, then the
   model behind `ARG NARRATOR_MODEL` (`int8` default or `full`, from
   `setup --narrator-model`; fp16 is excluded because it yields NaN on CPU),

@@ -545,6 +545,12 @@ is playing and each sentence as it is spoken. The controls:
   Claude is told, and asks how you want to go on. **Continue**, which Stop
   becomes, carries on from the stop you stopped at.
 
+Previous, Stop/Continue and Next are also along the bottom of the subtitle
+float in Neovim, clickable with the mouse, with a count of the stops. They
+stay there while a stopped tour has no sentence to show. From a shell or a
+mapping, the same buttons are `:WalkthroughControl prev|next|stop|continue`,
+or `narrator control <action>` in the container.
+
 The page keeps a loop of noise far below hearing playing while it listens.
 Without it, the first word or two after every gap went missing: Bluetooth
 headphones and some sound cards power down after a moment of digital silence,
@@ -557,7 +563,12 @@ reason.
 The narrator writes a tour to `.tours/<date>-<title>.json` at the root of
 the project as the stops arrive, and adds `/.tours/` to `.git/info/exclude`
 unless git already ignores or tracks it. `:WalkthroughReplay [file]` plays one
-again (the narrator's `tour_replay`), without Claude writing anything.
+again (the narrator's `tour_replay`), without Claude writing anything, and
+Claude stays in its pane for questions when you press Stop.
+`:WalkthroughReplayOffline [file]` plays one with no Claude at all: Neovim
+asks the narrator directly (`narrator replay`, which starts the narrator if
+needed), and the narrator highlights in that same Neovim and speaks through
+the player as usual. Stop then only holds the tour until Continue.
 
 A tour's line numbers belong to the code it was written about, so a tour is
 saved only when git can give that code back:
@@ -636,6 +647,9 @@ player and the MCP endpoint (`/mcp`), and the two are guarded differently:
 - **The player** needs the token in the link. Anyone with the link hears
   what is narrated.
 - **The MCP endpoint** answers only connections from inside the container.
+  So does `/replay`, which `narrator replay` uses: it names a file for the
+  narrator to read and a Neovim socket to connect to, which the holder of a
+  player link has no business choosing.
 
 The token survives narrator restarts but not a recreated container. After
 `./dev rebuild`, or an `up` that recreates the container, an open player says

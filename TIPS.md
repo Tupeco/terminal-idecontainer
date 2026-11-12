@@ -125,6 +125,8 @@ somewhere new and silently leaves the original alone. See
 | `:Walkthrough` in a `:DiffviewOpen` tab | Tours the diff in that tab, stop by stop through its files |
 | `:Walkthrough!` in a `:DiffviewOpen` tab | A deep tour: Claude reads the code as it was before the change first |
 | `:WalkthroughReplay [file]` | Replay a tour saved in `.tours/` (default: the newest) |
+| `:WalkthroughReplayOffline [file]` | The same with no Claude: the narrator just plays it |
+| `:WalkthroughControl <action>` | Press a player button from Neovim: `prev`, `next`, `stop`, `continue` |
 | `:WalkthroughClear` | Remove the walkthrough highlight and subtitle |
 
 ## Working in a project
@@ -1141,6 +1143,9 @@ tour in a Diffview of the same two commits. Claude only hands the file to the
 narrator, so it starts at once, and it is still there for questions when you
 press Stop. A file that has changed since is shown as the tour's commit had
 it, in a read-only `walkthrough://` buffer, so the highlights still fit.
+`:WalkthroughReplayOffline` does the same with no Claude: the tab has only
+the tree and the code, and the narrator plays the tour straight away, with
+nobody to answer questions.
 
 The highlight reaches the Neovim whose working directory is in the same
 project as Claude's, so start `nvim` in the project. If the narrator says it
@@ -1157,6 +1162,13 @@ While it talks:
   still writing, and Claude asks what you would like. Ask a question in its
   pane; it can answer aloud while the tour stays held. **Continue** (or
   telling Claude to carry on) resumes from the stop you were on.
+
+The same buttons sit along the bottom of the subtitle in Neovim: click
+◀ Prev, ■ Stop (▶ Continue once stopped) or Next ▶. `:WalkthroughControl`
+with `prev`, `next`, `stop` or `continue` presses them from the command line,
+ready to map to keys. While Claude's pane has focus, a click may go to Claude
+instead, if it has turned mouse reporting on. Click in the code first, or use
+the command.
 
 The tool calls are visible in Claude's pane. If the highlight lands somewhere
 odd, `:WalkthroughClear` removes it, and the next stop moves it anyway. In a

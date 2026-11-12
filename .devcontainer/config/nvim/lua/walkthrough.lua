@@ -1,9 +1,11 @@
 -- Narrated code walkthroughs: the Neovim half.
 --
--- show(), subtitle() and clear() are called over RPC, one stop at a time:
+-- show(), subtitle(), controls() and clear() are called over RPC, one stop
+-- at a time, and diff_info() once as a tour starts:
 --
 --   require('walkthrough').show('/path/to/dev', 120, 148, 'Choosing a port')
 --   require('walkthrough').subtitle('The port is chosen once, at setup...')
+--   require('walkthrough').controls({ state = 'playing', index = 2, total = 6 })
 --   require('walkthrough').clear()
 --
 -- by the narrator during a tour (narrator.py, over the socket the nvim-mcp
@@ -16,7 +18,10 @@
 -- `:WalkthroughReplay` does the same for a tour the narrator saved earlier
 -- under .tours/, which Claude then only has to hand back to the narrator; a
 -- tour of a diff reopens that diff, and files changed since are shown as the
--- tour's commit has them, from git (show()'s `source`). The
+-- tour's commit has them, from git (show()'s `source`).
+-- `:WalkthroughReplayOffline` plays a saved tour with no Claude at all, and
+-- `:WalkthroughControl` presses the player's buttons, which are also along
+-- the bottom of the subtitle float. The
 -- narrator (the MCP server that speaks, and its browser player) is described
 -- in README.md under "Narrated walkthroughs"; without it the same walkthrough
 -- works with the narration written in Claude's chat instead.
@@ -30,12 +35,17 @@
 local M = {}
 
 local ns = vim.api.nvim_create_namespace("walkthrough")
+-- The subtitle's buttons, apart from `ns`, which clear_marks() empties in
+-- every buffer at each stop.
+local bar_ns = vim.api.nvim_create_namespace("walkthrough_bar")
 
 -- Linked rather than coloured, so they follow the colorscheme. `default`
 -- leaves a colorscheme free to style them properly.
 vim.api.nvim_set_hl(0, "WalkthroughRange", { link = "Visual", default = true })
 vim.api.nvim_set_hl(0, "WalkthroughLabel", { link = "Title", default = true })
 vim.api.nvim_set_hl(0, "WalkthroughSubtitle", { link = "NormalFloat", default = true })
+vim.api.nvim_set_hl(0, "WalkthroughButton", { link = "TabLine", default = true })
+vim.api.nvim_set_hl(0, "WalkthroughCount", { link = "Comment", default = true })
 
 -- The window the last stop was shown in, reused while it stays suitable so the
 -- code does not hop between splits from one stop to the next. `:Walkthrough`
@@ -46,7 +56,10 @@ vim.api.nvim_set_hl(0, "WalkthroughSubtitle", { link = "NormalFloat", default = 
 local last_win = nil
 
 -- The subtitle float and its buffer, reused from one sentence to the next.
-local sub = { win = nil, buf = nil }
+-- `text` is the sentence being spoken, `bar` the tour's state as the narrator
+-- last sent it to controls(), and `buttons` where the buttons on the float's
+-- bottom row are, for the click handler (on_click).
+local sub = { win = nil, buf = nil, text = nil, bar = nil, buttons = {}, bar_row = nil }
 
 -- Diff mode: set when `:Walkthrough` starts in a Diffview tab, which it then
 -- stays in instead of opening one of its own. The new tab would show files
@@ -153,11 +166,57 @@ local function reveal_in_tree(win, abs)
   end)
 end
 
+-- Clicks on the subtitle's buttons, watched with vim.on_key while the float
+-- has them. Not a <LeftMouse> mapping: satellite.nvim (the scrollbar) maps
+-- <LeftMouse> globally, and its handler re-sends the click and reads the
+-- input stream itself, so it could neither stay mapped beside ours nor be
+-- called from inside an expr mapping. on_key sees every key without taking
+-- the mapping, and since Neovim 0.11 can swallow one by returning "". A
+-- press on a button runs it; a click anywhere else on the float is swallowed
+-- too, rather than moving the cursor into it; every other click goes on as
+-- usual. getmousepos() reports only focusable floats, so the subtitle is
+-- focusable (and so reachable with <C-w>w too, a small price).
+--
+-- In Claude's terminal a click reaches Neovim only while Claude has not
+-- turned on mouse reporting; otherwise the terminal gets it (see
+-- :help terminal-mouse), and the player's buttons or :WalkthroughControl do
+-- the same job.
+local click_ns = vim.api.nvim_create_namespace("walkthrough_click")
+local clicks_on = false
+local PRESS = vim.keycode("<LeftMouse>")
+local FOLLOW = { vim.keycode("<LeftRelease>"), vim.keycode("<LeftDrag>") }
+
+local function on_key(_, typed)
+  if not (typed and typed ~= "" and sub.win) then return end
+  local press = typed:find(PRESS, 1, true) ~= nil
+  if not press and not (typed:find(FOLLOW[1], 1, true) or typed:find(FOLLOW[2], 1, true)) then
+    return
+  end
+  local pos = vim.fn.getmousepos()
+  if pos.winid ~= sub.win then return end
+  if press and pos.line == sub.bar_row then
+    for _, b in ipairs(sub.buttons) do
+      if pos.column >= b.from and pos.column <= b.to then
+        vim.schedule(function() M.control(b.action) end)
+        break
+      end
+    end
+  end
+  return ""
+end
+
+local function watch_clicks(on)
+  if on == clicks_on then return end
+  clicks_on = on
+  vim.on_key(on and on_key or nil, click_ns)
+end
+
 local function close_subtitle()
   if sub.win and vim.api.nvim_win_is_valid(sub.win) then
     vim.api.nvim_win_close(sub.win, true)
   end
   sub.win = nil
+  watch_clicks(false)
 end
 
 local function clear_marks()
@@ -354,9 +413,9 @@ end
 --- the lines are those of the diff's right-hand side. With `source`
 --- ({rev, top, rel}, from the narrator) the file is shown as commit `rev` has
 --- it rather than from disk.
-function M.show(path, first, last, label, source)
-  clear_marks()
-  close_subtitle()
+local render
+
+local function show_stop(path, first, last, label, source)
   local abs = vim.fn.fnamemodify(path, ":p")
   local view = diff_view()
   if view then
@@ -373,18 +432,53 @@ function M.show(path, first, last, label, source)
   return showing(name, first, last)
 end
 
---- Show `text` as a subtitle in a float along the bottom of the code window,
---- or close the float when `text` is nil or empty. The narrator calls this as
---- each sentence starts playing in the player, so it follows the voice rather
---- than the moment the audio was sent.
----
---- Over the code window rather than the bottom of the tab, which is where
---- Claude's terminal is: a float there would cover the prompt you type
---- questions into.
-function M.subtitle(text)
-  if text == nil or text == vim.NIL or vim.trim(text) == "" then
+function M.show(path, first, last, label, source)
+  clear_marks()
+  -- The last stop's sentence goes; the buttons stay, moved to the new window.
+  sub.text = nil
+  local ok, res = pcall(show_stop, path, first, last, label, source)
+  render()
+  if not ok then error(res, 0) end
+  return res
+end
+
+-- The bottom row of the subtitle: the buttons, and how far the tour has got.
+-- Records each button's byte columns (1-based, as getmousepos() counts them).
+-- Plain geometric glyphs rather than the media-control ones (U+23EE and
+-- friends), which some terminals draw two cells wide and so misalign.
+local function bar_line(bar, width)
+  local buttons = {
+    { "◀ Prev", "prev" },
+    bar.state == "stopped" and { "▶ Continue", "continue" } or { "■ Stop", "stop" },
+    { "Next ▶", "next" },
+  }
+  local line, ranges = " ", {}
+  for i, b in ipairs(buttons) do
+    if i > 1 then line = line .. "   " end
+    local label = " " .. b[1] .. " "
+    table.insert(ranges, { from = #line + 1, to = #line + #label, action = b[2] })
+    line = line .. label
+  end
+  local count = string.format("%d/%d%s ", math.min(bar.index + 1, bar.total), bar.total,
+    bar.complete and "" or "…")
+  local pad = width - vim.fn.strdisplaywidth(line) - vim.fn.strdisplaywidth(count)
+  local count_from = #line + math.max(1, pad)
+  return line .. string.rep(" ", math.max(1, pad)) .. count, ranges, count_from
+end
+
+local function bar_visible()
+  local bar = sub.bar
+  return bar ~= nil and (bar.state == "playing" or bar.state == "stopped") and (bar.total or 0) > 0
+end
+
+-- Draw the subtitle float from `sub`: the sentence, if one is being spoken,
+-- over the buttons, while a tour is playing or stopped. With neither, close
+-- it. After Stop there is no sentence, but the row stays, for Continue.
+function render()
+  local has_bar = bar_visible()
+  if not sub.text and not has_bar then
     close_subtitle()
-    return "subtitle closed"
+    return
   end
   local win = code_window()
   if not diff_view() then last_win = win end
@@ -392,19 +486,40 @@ function M.subtitle(text)
     sub.buf = vim.api.nvim_create_buf(false, true)
     vim.bo[sub.buf].bufhidden = "hide"
   end
-  vim.api.nvim_buf_set_lines(sub.buf, 0, -1, false, { vim.trim(text) })
 
   -- Narrower than the window on a wide screen, since a line of 200 characters
   -- is hard to follow; the border takes two columns and two rows.
   local wwidth = vim.api.nvim_win_get_width(win)
   local wheight = vim.api.nvim_win_get_height(win)
   local width = math.max(10, math.min(wwidth - 4, 100))
+  local lines, count_from = {}, nil
+  if sub.text then table.insert(lines, sub.text) end
+  sub.buttons, sub.bar_row = {}, nil
+  if has_bar then
+    local row
+    row, sub.buttons, count_from = bar_line(sub.bar, width)
+    table.insert(lines, row)
+    sub.bar_row = #lines
+  end
+  vim.bo[sub.buf].modifiable = true
+  vim.api.nvim_buf_set_lines(sub.buf, 0, -1, false, lines)
+  vim.bo[sub.buf].modifiable = false
+  vim.api.nvim_buf_clear_namespace(sub.buf, bar_ns, 0, -1)
+  for _, b in ipairs(sub.buttons) do
+    vim.api.nvim_buf_set_extmark(sub.buf, bar_ns, sub.bar_row - 1, b.from - 1,
+      { end_col = b.to, hl_group = "WalkthroughButton" })
+  end
+  if count_from then
+    vim.api.nvim_buf_set_extmark(sub.buf, bar_ns, sub.bar_row - 1, count_from - 1,
+      { end_col = #lines[sub.bar_row], hl_group = "WalkthroughCount" })
+  end
+
   local config = {
     relative = "win", win = win,
     row = wheight - 3, col = math.floor((wwidth - width - 2) / 2),
     width = width, height = 1,
     anchor = "NW", style = "minimal", border = "rounded",
-    focusable = false, zindex = 60, noautocmd = true,
+    focusable = true, zindex = 60, noautocmd = true,
   }
   -- The window it is anchored to may have changed since the last sentence (a
   -- new code window, a resize), so it is reconfigured every time.
@@ -425,7 +540,62 @@ function M.subtitle(text)
   config.height = height
   config.row = math.max(0, wheight - height - 2)
   vim.api.nvim_win_set_config(sub.win, config)
-  return "subtitle shown"
+  watch_clicks(has_bar)
+end
+
+--- Show `text` as a subtitle in a float along the bottom of the code window,
+--- or take it away when `text` is nil or empty (the float itself stays while
+--- it has buttons). The narrator calls this as each sentence starts playing
+--- in the player, so it follows the voice rather than the moment the audio
+--- was sent.
+---
+--- Over the code window rather than the bottom of the tab, which is where
+--- Claude's terminal is: a float there would cover the prompt you type
+--- questions into.
+function M.subtitle(text)
+  if text == nil or text == vim.NIL or vim.trim(text) == "" then
+    sub.text = nil
+  else
+    sub.text = vim.trim(text)
+  end
+  render()
+  return sub.text and "subtitle shown" or "subtitle closed"
+end
+
+--- The tour's state, for the buttons along the bottom of the subtitle:
+--- { state = "playing"|"stopped"|"finished", index = <0-based stop>,
+---   total = <stops queued>, complete = <all stops sent> }. The narrator calls
+--- it whenever one of these changes; "finished" takes the buttons away.
+function M.controls(state)
+  if type(state) ~= "table" or state.state == "finished" then
+    sub.bar = nil
+  else
+    sub.bar = {
+      state = state.state,
+      index = tonumber(state.index) or 0,
+      total = tonumber(state.total) or 0,
+      complete = state.complete == true,
+    }
+  end
+  render()
+  return "controls updated"
+end
+
+--- Press one of the player's buttons: "prev", "next", "stop" or "continue".
+--- Through `narrator control`, which knows the narrator's port and token.
+function M.control(action)
+  if vim.fn.executable("narrator") == 0 then
+    vim.notify("Walkthrough: the narrator is not installed here", vim.log.levels.ERROR)
+    return
+  end
+  vim.system({ "narrator", "control", action }, { text = true }, function(r)
+    if r.code ~= 0 then
+      vim.schedule(function()
+        vim.notify("Walkthrough: narrator control " .. action .. " failed: "
+          .. vim.trim((r.stderr or "") .. (r.stdout or "")), vim.log.levels.ERROR)
+      end)
+    end
+  end)
 end
 
 --- What diff mode is touring, for the narrator to record with a saved tour:
@@ -452,6 +622,7 @@ end
 --- diff mode the float for stops outside the diff.
 function M.clear()
   clear_marks()
+  sub.text, sub.bar = nil, nil
   close_subtitle()
   close_peek()
   pending = nil
@@ -876,6 +1047,63 @@ function M.replay(opts)
   prepare_replay(data, { "claude", replay_prompt(file) }, function() end)
 end
 
+-- What `narrator replay` said, as one notification.
+local function report_replay(r)
+  local ok, reply = pcall(vim.json.decode, r.stdout or "", { luanil = { object = true } })
+  if r.code ~= 0 or not ok or type(reply) ~= "table" or not reply.ok then
+    local why = ok and type(reply) == "table" and reply.error
+      or vim.trim((r.stderr or "") .. (r.stdout or ""))
+    vim.notify("WalkthroughReplayOffline: " .. (why ~= "" and why or "narrator replay failed"),
+      vim.log.levels.ERROR)
+    return
+  end
+  local lines = { string.format("Playing %q, %d stops.", reply.title, reply.stops) }
+  if reply.diff then
+    table.insert(lines, string.format("A tour of the diff %s..%s.", reply.diff.left:sub(1, 12),
+      reply.diff.right:sub(1, 12)))
+  end
+  if reply.from_git and #reply.from_git > 0 then
+    table.insert(lines, string.format("Changed since, so shown as commit %s has them: %s.",
+      reply.commit:sub(1, 12), table.concat(reply.from_git, ", ")))
+  end
+  if not reply.complete then
+    table.insert(lines, "It was saved before Claude finished writing it, so it may end abruptly.")
+  end
+  vim.list_extend(lines, reply.warnings or {})
+  if not reply.nvim then
+    table.insert(lines, "The narrator found no Neovim to highlight in.")
+  end
+  local level = vim.log.levels.INFO
+  if (reply.players or 0) == 0 then
+    table.insert(lines, "No player is listening: open the address `./dev narrator-url` prints on the host. Playback starts when it connects.")
+    level = vim.log.levels.WARN
+  end
+  vim.notify(table.concat(lines, "\n"), level)
+end
+
+-- `:WalkthroughReplayOffline [file]`: a saved tour with no Claude at all. The
+-- narrator plays a tour by itself in any case (Claude's part in a replay is
+-- only to start it and to be there for questions), so this asks it directly,
+-- through `narrator replay`, and names this Neovim as the one to highlight
+-- in, rather than whichever the narrator would find for the project. Nobody
+-- is there for questions, so Stop only holds the tour until Continue.
+function M.replay_offline(opts)
+  if vim.fn.executable("narrator") == 0 then
+    vim.notify("WalkthroughReplayOffline: the narrator is not installed here (./dev reconfigure --with-narrator)",
+      vim.log.levels.ERROR)
+    return
+  end
+  local file, data = tour_arg(opts, "WalkthroughReplayOffline")
+  if not file then return end
+  prepare_replay(data, nil, function()
+    local server = vim.v.servername
+    if server == "" then server = vim.fn.serverstart() end
+    vim.system({ "narrator", "replay", file, "--nvim", server }, { text = true }, function(r)
+      vim.schedule(function() report_replay(r) end)
+    end)
+  end)
+end
+
 function M.setup()
   -- A stop that arrived while the Diffview tab was not on screen (show_in_diff)
   -- is shown on returning to it. Scheduled, so that Diffview's own TabEnter
@@ -904,6 +1132,27 @@ function M.setup()
       return vim.tbl_filter(function(f) return f:find(lead, 1, true) == 1 end, saved_tours())
     end,
     desc = "Replay a narrated walkthrough saved under .tours/",
+  })
+  vim.api.nvim_create_user_command("WalkthroughReplayOffline", M.replay_offline, {
+    nargs = "?",
+    complete = function(lead)
+      return vim.tbl_filter(function(f) return f:find(lead, 1, true) == 1 end, saved_tours())
+    end,
+    desc = "Play a narrated walkthrough saved under .tours/, with no Claude",
+  })
+  local actions = { "prev", "next", "stop", "continue" }
+  vim.api.nvim_create_user_command("WalkthroughControl", function(opts)
+    if not vim.tbl_contains(actions, opts.args) then
+      vim.notify("WalkthroughControl: one of " .. table.concat(actions, ", "), vim.log.levels.ERROR)
+      return
+    end
+    M.control(opts.args)
+  end, {
+    nargs = 1,
+    complete = function(lead)
+      return vim.tbl_filter(function(a) return a:find(lead, 1, true) == 1 end, actions)
+    end,
+    desc = "Press a narrator button: prev, next, stop or continue",
   })
   vim.api.nvim_create_user_command("WalkthroughClear", function() M.clear() end,
     { desc = "Remove the walkthrough highlight and subtitle" })

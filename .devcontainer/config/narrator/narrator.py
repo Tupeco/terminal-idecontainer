@@ -45,7 +45,10 @@ One long-lived process serves both halves on one port (6769 in the container):
     /clip/<id>.wav  one synthesised clip       } on every interface of the host
     /started        the player: a clip started playing (moves the subtitle)
     /ended          the player: a clip finished playing
-    /control        the player's buttons: prev, next, stop, continue
+    /control        the player's buttons: prev, next, stop, continue (also
+                    `narrator control`, and the buttons in Neovim's subtitle)
+    /replay         play a saved tour with no Claude involved (`narrator
+                    replay`, `:WalkthroughReplayOffline`); token and loopback
 
 Long-lived rather than a stdio server that Claude Code spawns per session: two
 sessions would fight over the port, the model would load (1-2 s) for every
@@ -592,6 +595,9 @@ class Tour:
         self.jump: int | None = None
         # The listener stopped since Claude last heard about it.
         self.stop_unreported = False
+        # What walkthrough.controls() was last told, so that it is called only
+        # on a change: announce() runs far more often than anything changes.
+        self.controls_sent: tuple | None = None
         # The file of the stop last highlighted, to tell a change of file from
         # a scroll; and when the previous stop's narration ended, if the tour
         # moved on by itself rather than by a button (see FILE_CHANGE_PAUSE).
@@ -699,7 +705,26 @@ class Narrator:
 
     def announce(self) -> None:
         self.broadcast(self.state_event())
+        t = self.tour
+        if t is not None and t.nvim is not None:
+            # The buttons along the bottom of the subtitle in Neovim, which
+            # need to know the tour's state just as the player page does:
+            # Stop turns into Continue, and the count moves on.
+            sent = (t.state, min(t.pos, len(t.stops)), len(t.stops), t.complete)
+            if sent != t.controls_sent:
+                t.controls_sent = sent
+                self.spawn(self.controls(t, sent))
         self.poke()
+
+    async def controls(self, t: Tour, sent: tuple) -> None:
+        state, index, total, complete = sent
+        try:
+            await t.nvim.lua(  # type: ignore[union-attr]
+                "return require('walkthrough').controls(...)",
+                {"state": state, "index": index, "total": total, "complete": complete},
+            )
+        except Exception as e:  # noqa: BLE001 -- the player has the same buttons
+            log.warning("updating the buttons in Neovim failed: %s", e)
 
     # -- single utterances ---------------------------------------------------
 
@@ -1201,11 +1226,13 @@ class Narrator:
 
 
 class LoopbackOnly:
-    """Refuse /mcp to anything but loopback.
+    """Refuse /mcp and /replay to anything but loopback.
 
     The port is published on every host interface for the player's sake, and
     the MCP endpoint must not come with it: anyone on your LAN could otherwise
-    make the container talk. Traffic through the published port arrives from
+    make the container talk. /replay needs the player's token as well, but it
+    names a file for this process to read and a socket for it to connect to,
+    which a holder of the player's URL has no business choosing. Traffic through the published port arrives from
     Docker's gateway address, never from 127.0.0.1, so this check is exact.
     The SDK's own DNS-rebinding guard (on for host 127.0.0.1) covers browsers.
     """
@@ -1214,7 +1241,7 @@ class LoopbackOnly:
         self.app = app
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] == "http" and scope["path"].startswith("/mcp"):
+        if scope["type"] == "http" and scope["path"].startswith(("/mcp", "/replay")):
             host = (scope.get("client") or ("", 0))[0]
             if host not in ("127.0.0.1", "::1"):
                 await Response("MCP is only served to the container itself\n", 403)(scope, receive, send)
@@ -1416,6 +1443,32 @@ def build_app(narrator: Narrator, token: str) -> ASGIApp:
         narrator.control(action)
         return JSONResponse({"ok": True})
 
+    async def replay(request: Request) -> Response:
+        """A saved tour played with no Claude in the loop, for `narrator
+        replay`. Playback is the narrator's own either way (drive() needs no
+        tour_wait), so all this adds is a way in that is not MCP: speaking
+        MCP from a shell script would mean a session handshake per call."""
+        if not authorised(request):
+            return denied
+        try:
+            body = await request.json()
+        except ValueError:
+            body = None
+        if not isinstance(body, dict):
+            return JSONResponse({"ok": False, "error": "expected a JSON object"}, 400)
+        path, root, nvim = body.get("path"), body.get("project_root"), body.get("nvim")
+        if not (isinstance(path, str) and os.path.isabs(path)):
+            return JSONResponse({"ok": False, "error": "path must be absolute"}, 400)
+        try:
+            r = await narrator.replay(
+                path,
+                root if isinstance(root, str) and root else None,
+                nvim if isinstance(nvim, str) and nvim else None,
+            )
+        except ValueError as e:
+            return JSONResponse({"ok": False, "error": str(e)}, 400)
+        return JSONResponse({"ok": True, **r})
+
     for path, endpoint, methods in (
         ("/", page, ["GET"]),
         ("/events", events, ["GET"]),
@@ -1423,6 +1476,7 @@ def build_app(narrator: Narrator, token: str) -> ASGIApp:
         ("/started", started, ["POST"]),
         ("/ended", ended, ["POST"]),
         ("/control", control, ["POST"]),
+        ("/replay", replay, ["POST"]),
     ):
         mcp.custom_route(path, methods=methods)(endpoint)
 
