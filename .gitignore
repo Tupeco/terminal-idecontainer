@@ -8,3 +8,7 @@
 # The host side of the /mount bind: context handed to Claude, generated output
 # worth keeping, host clones you push to. Yours, not the template's.
 /mount/*
+
+# Python bytecode, written next to narrator.py whenever it is imported or
+# compiled locally. The image builds its own.
+__pycache__/

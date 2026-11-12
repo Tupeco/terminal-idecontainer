@@ -1,0 +1,3 @@
+# Python bytecode from importing narrator.py on this side; the image does not
+# need it, and Python would only check it against the source and recompile.
+**/__pycache__
