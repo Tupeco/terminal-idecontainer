@@ -121,6 +121,19 @@ MIN_CHUNK_CHARS = 60
 
 SENTENCE_END = re.compile(r"(?<=[.!?;:])\s+")
 
+# Seconds of quiet (before, after) the view moves on to the next stop: the
+# narration ends, the old view stays a moment, the highlight moves, and the
+# voice resumes only once the eye has found its place. The view used to move
+# the instant a stop's last clip ended, with all of the silence after it, so
+# a jump to another file came while the last words still rang and left too
+# little time to read the new place before the voice was back. More around a
+# change of file, which means a new buffer to take in, than around a scroll
+# within the same one. "Before" counts from the end of the narration, so time
+# spent waiting for a late stop counts towards it. A stop reached by Previous,
+# Next or Continue moves at once, as the listener asked, with only the "after".
+FILE_CHANGE_PAUSE = (0.8, 1.5)
+SCROLL_PAUSE = (0.4, 0.6)
+
 # Where tours are saved, under the project's git root (or project_root outside
 # git). The name the user's first hand-saved tours used, so those replay too.
 TOURS_DIR = ".tours"
@@ -153,8 +166,10 @@ def gap_after(seconds: float, end_of_stop: bool) -> float:
     It was a flat 0.2 s, which ran sentences together. Longer after a longer
     clip, as a speaker breathes more after a long sentence than a short one:
     about 0.5 s after five seconds of speech, at most 0.8 s. A stop's last clip
-    gets more again, since the highlight moves there and the eye needs a beat
-    to follow it.
+    gets more again. That was the beat for the eye to follow the highlight to
+    the next stop; the driver's pauses around the move (FILE_CHANGE_PAUSE,
+    SCROLL_PAUSE) are longer and now set that timing, as the next stop's clips
+    are sent only after them, but the extra is kept for a `speak` that follows.
     """
     gap = 0.35 + min(0.45, 0.03 * seconds)
     return round(gap + (0.35 if end_of_stop else 0.0), 2)
@@ -577,6 +592,11 @@ class Tour:
         self.jump: int | None = None
         # The listener stopped since Claude last heard about it.
         self.stop_unreported = False
+        # The file of the stop last highlighted, to tell a change of file from
+        # a scroll; and when the previous stop's narration ended, if the tour
+        # moved on by itself rather than by a button (see FILE_CHANGE_PAUSE).
+        self.shown_file: str | None = None
+        self.ended_at: float | None = None
 
     def where(self) -> str:
         if not self.stops:
@@ -1065,6 +1085,7 @@ class Narrator:
             wake = self.wake
             if t.jump is not None:
                 t.pos, t.jump = t.jump, None
+                t.ended_at = None
                 self.announce()
                 continue
             if t.state == "finished":
@@ -1085,9 +1106,17 @@ class Narrator:
                 await self.wait_any(wake, stop.ready)
                 continue
 
+            before, after = SCROLL_PAUSE if stop.spec.file == t.shown_file else FILE_CHANGE_PAUSE
+            if t.ended_at is not None:
+                if not await self.pause(t, before - (time.monotonic() - t.ended_at)):
+                    continue
+                t.ended_at = None
             await self.highlight(t, stop)
+            t.shown_file = stop.spec.file
             t.subtitled = None
             self.announce()
+            if not await self.pause(t, after):
+                continue
             for clip in stop.clips:
                 clip.done.clear()
                 self.broadcast(self.clip_event(clip, clip is stop.clips[-1]))
@@ -1100,10 +1129,24 @@ class Narrator:
                 await self.wait_any(wake, last.done)
             if last.done.is_set() and t.jump is None and t.state == "playing":
                 t.pos += 1
+                t.ended_at = time.monotonic()
                 self.announce()
             # Otherwise the loop top handles the jump, the stop or the missing
             # player, and a stop that was cut short is played again from its
             # start when the tour carries on.
+
+    async def pause(self, t: Tour, seconds: float) -> bool:
+        """Wait `seconds`, unless a button or a lost player needs the driver
+        first, in which case False: the loop top deals with it."""
+        deadline = time.monotonic() + seconds
+        while True:
+            wake = self.wake
+            if t.jump is not None or t.state != "playing" or not self.players:
+                return False
+            left = deadline - time.monotonic()
+            if left <= 0:
+                return True
+            await self.wait_any(wake, timeout=left)
 
     def control(self, action: str) -> None:
         """A player button. Previous and Next jump within a tour; Stop holds it."""

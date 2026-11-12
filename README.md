@@ -482,7 +482,11 @@ on the next start, but `pg stop` first is cleaner.
 Code across the bottom, and asks Claude for a spoken tour of the code. Claude
 moves a highlight through the code and explains each stop aloud, with the
 tree following the file and the words as subtitles in Neovim, and it moves on
-only once you have heard the explanation. With no argument the tour covers the current file, or the whole
+only once you have heard the explanation. Between stops the view holds for a
+moment after the voice stops, then moves, and the voice resumes after another
+pause so you can find your place. The pauses are longer when the next stop is
+in another file (0.8 s and 1.5 s) than for a scroll within one (0.4 s and
+0.6 s). With no argument the tour covers the current file, or the whole
 project when the current window is not a file (neo-tree, say). You can also
 give it a topic (`:Walkthrough how setup picks ports`), or a visual selection
 (`:'<,'>Walkthrough`) for just those lines.
