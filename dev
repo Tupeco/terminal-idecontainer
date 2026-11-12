@@ -769,10 +769,15 @@ start_services_after_up() {
       || echo "warning: PostgreSQL did not start; run pg start inside, or see pg log" >&2
   fi
   # The narrator before Orca too: it is quick, and Orca's start is the one
-  # that prints the most.
+  # that prints the most. Its player addresses are printed in full rather
+  # than as a pointer to `./dev narrator-url`: a recreated container comes
+  # back with a new token, so an open player needs the new link after every
+  # `up` that recreated it, and going to fetch it each time was a chore. In a
+  # subshell, as cmd_narrator_url dies on errors.
   if [ "$(narrator_setting)" = true ]; then
     if "${COMPOSE[@]}" exec -T "$SERVICE" bash -lc 'narrator start'; then
-      echo "Narrator player address: ./dev narrator-url"
+      ( cmd_narrator_url ) \
+        || echo "warning: could not print the player's address; try ./dev narrator-url" >&2
     else
       echo "warning: the narrator did not start; try ./dev narrator, or see ./dev narrator-log" >&2
     fi

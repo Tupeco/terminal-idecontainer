@@ -520,8 +520,8 @@ Set it up per project:
 ```sh
 ./dev setup myproject --with-narrator     # a new project
 ./dev reconfigure --with-narrator         # an existing one
-./dev up
-./dev narrator-url                        # where to listen
+./dev up                                  # also prints where to listen
+./dev narrator-url                        # prints it again
 ```
 
 The speech model is a setup choice too. `--narrator-model int8` is the
@@ -653,7 +653,8 @@ player and the MCP endpoint (`/mcp`), and the two are guarded differently:
 
 The token survives narrator restarts but not a recreated container. After
 `./dev rebuild`, or an `up` that recreates the container, an open player says
-its link was rejected; get a fresh one from `./dev narrator-url`.
+its link was rejected. `up` and `rebuild` print the fresh links, and
+`./dev narrator-url` prints them again.
 
 Without the narrator, or with no player open, the same walkthrough still
 works. Claude writes each stop's narration in the chat instead.
